@@ -166,8 +166,8 @@ static float btn_icon(Cv& c, float cx, float cy, float sz, uint32_t b) {
 }
 
 // ------------------------------------------------------------------ game
-static const uint32_t DEFAULT_BIND[A_COUNT] = {B_R2, B_L2, B_SQUARE, B_TRIANGLE, B_OPTIONS};
-static const char* ACTION_NAME[A_COUNT] = {"ACCELERATE", "BRAKE", "HANDBRAKE", "RESET CAR", "PAUSE"};
+static const uint32_t DEFAULT_BIND[A_COUNT] = {B_R2, B_L2, B_SQUARE, B_TRIANGLE, B_OPTIONS, B_R3};
+static const char* ACTION_NAME[A_COUNT] = {"ACCELERATE", "BRAKE", "HANDBRAKE", "RESET CAR", "PAUSE", "CAMERA VIEW"};
 
 Game::Game() {
     struct P { int len; float c; };
@@ -223,13 +223,14 @@ float Game::axis(int a, const PadState& pad, uint32_t dn) const {
 }
 
 std::string Game::save_blob() const {
-    char buf[160];
-    snprintf(buf, sizeof buf, "v1 %u %u %u %u %u q%d f%d l%d", bind[0], bind[1], bind[2], bind[3], bind[4], quality, show_fps ? 1 : 0, laps_total);
+    char buf[200];
+    snprintf(buf, sizeof buf, "v2 %u %u %u %u %u %u q%d f%d l%d c%d", bind[0], bind[1], bind[2], bind[3], bind[4], bind[5], quality, show_fps ? 1 : 0, laps_total, fpv ? 1 : 0);
     return buf;
 }
 void Game::load_blob(const std::string& s) {
-    unsigned b[A_COUNT]; int q, f, l;
-    if (sscanf(s.c_str(), "v1 %u %u %u %u %u q%d f%d l%d", &b[0], &b[1], &b[2], &b[3], &b[4], &q, &f, &l) != 8) return;
+    unsigned b[A_COUNT]; int q, f, l, cm;
+    if (sscanf(s.c_str(), "v2 %u %u %u %u %u %u q%d f%d l%d c%d", &b[0], &b[1], &b[2], &b[3], &b[4], &b[5], &q, &f, &l, &cm) != 10) return;
+    fpv = cm != 0;
     for (int i = 0; i < A_COUNT; i++) if (b[i] && (b[i] & (b[i] - 1)) == 0 && b[i] <= B_RIGHT) bind[i] = b[i];
     quality = q < 0 ? 0 : (q > 2 ? 2 : q); show_fps = f != 0; laps_total = l < 1 ? 1 : (l > 9 ? 9 : l);
 }
@@ -251,7 +252,7 @@ void Game::update(float dt, const PadState& pad) {
     auto wrap = [](int v, int n) { return (v % n + n) % n; };
 
     if (state == MENU) {
-        const int N = 5;
+        const int N = 6;
         if (ed & B_UP) menu_sel = wrap(menu_sel - 1, N);
         if (ed & B_DOWN) menu_sel = wrap(menu_sel + 1, N);
         int dir = ((ed & B_RIGHT) ? 1 : 0) - ((ed & B_LEFT) ? 1 : 0);
@@ -260,6 +261,7 @@ void Game::update(float dt, const PadState& pad) {
         else if (menu_sel == 1 && ok) { ctl_return = MENU; state = CONTROLS; ctl_sel = 0; capturing = false; }
         else if (menu_sel == 2 && (dir || ok)) { quality = wrap(quality + (dir ? dir : 1), 3); dirty = true; }
         else if (menu_sel == 3 && (dir || ok)) { show_fps = !show_fps; dirty = true; }
+        else if (menu_sel == 5 && (dir || ok)) { fpv = !fpv; dirty = true; }
         else if (menu_sel == 4 && (dir || ok)) { laps_total = std::max(1, std::min(9, laps_total + (dir ? dir : 1))); if (laps_total == 9 && !dir) laps_total = 1; dirty = true; }
         return;
     }
@@ -310,6 +312,7 @@ void Game::update(float dt, const PadState& pad) {
     // ---------------- RACE
     if (ed_raw & bind[A_PAUSE]) { state = PAUSED; menu_sel = 0; return; }
     if (ed_raw & bind[A_RESET]) { px = 0; speed *= 0.5f; }
+    if (ed_raw & bind[A_CAMERA]) { fpv = !fpv; dirty = true; }
     race_t += dt;
     float gas = axis(A_GAS, pad, dn), brake = axis(A_BRAKE, pad, dn);
     bool hb = (dn & bind[A_HANDBRAKE]) != 0;
@@ -317,6 +320,7 @@ void Game::update(float dt, const PadState& pad) {
     if (dn & B_LEFT) steer = -1.0f;
     if (dn & B_RIGHT) steer = 1.0f;
     braking = brake > 0.1f || hb ? 1.0f : 0.0f;
+    steer_vis += (steer - steer_vis) * std::min(1.0f, dt * 9.0f);
     float accel = gas * 7000.0f - brake * 16000.0f - (gas < 0.05f ? 2500.0f : 0.0f) - (hb ? 9000.0f : 0.0f);
     bool off = fabsf(px) > 1.05f;
     if (off) accel -= 9000.0f;
@@ -502,10 +506,67 @@ void Game::scene(Cv& c, float cz, float cpx, bool race) {
         }
     }
     if (!race) return;
+    if (fpv) return;
     // player car
     float sx = 0, sy = 0;
     if (shake > 0) { sx = sinf(state_t * 90) * 8 * shake * 4 * S / 4; sy = cosf(state_t * 77) * 5 * shake * S; }
     draw_car(c, W * 0.5f + sx, H - 46 * S + sy, 330 * S, rgb(206, 28, 44), braking > 0 ? 1.0f : 0.35f, true);
+}
+
+void Game::cockpit(Cv& c) {
+    const int W = c.W, H = c.H;
+    const float S = c.S;
+    float bob = sinf(race_t * 17.0f) * (speed / MAX_SPEED) * 2.0f * S + (shake > 0 ? sinf(state_t * 90) * shake * 10.0f * S : 0.0f);
+    uint32_t body = rgb(206, 28, 44);
+    // roof + A pillars
+    int py = int(H * 0.66f);
+    for (int y = 0; y < py; y++) {
+        float t = float(y) / py;
+        int inner = int(W * (0.20f - 0.155f * t));
+        uint32_t col = mixc(rgb(8, 9, 13), rgb(22, 25, 34), t);
+        c.rect(0, y, inner, 1, col); c.rect(W - inner, y, inner, 1, col);
+        c.rect(inner - int(3 * S), y, int(3 * S), 1, rgb(46, 50, 64)); c.rect(W - inner, y, int(3 * S), 1, rgb(46, 50, 64));
+    }
+    c.vgrad(0, 0, W, int(H * 0.085f), rgb(8, 9, 13), argb(0, 8, 9, 13));
+    // mirrors
+    c.rrect(W * 0.045f, H * 0.40f, W * 0.105f, H * 0.075f, 14 * S, mixc(body, rgb(255, 255, 255), 0.2f), mixc(body, rgb(0, 0, 0), 0.4f));
+    c.rrect(W * 0.052f, H * 0.408f, W * 0.090f, H * 0.060f, 10 * S, rgb(32, 40, 56), rgb(16, 20, 30));
+    c.rrect(W * 0.85f, H * 0.40f, W * 0.105f, H * 0.075f, 14 * S, mixc(body, rgb(255, 255, 255), 0.2f), mixc(body, rgb(0, 0, 0), 0.4f));
+    c.rrect(W * 0.858f, H * 0.408f, W * 0.090f, H * 0.060f, 10 * S, rgb(32, 40, 56), rgb(16, 20, 30));
+    c.rrect(W * 0.5f - W * 0.09f, H * 0.012f, W * 0.18f, H * 0.065f, 12 * S, rgb(20, 22, 30), rgb(10, 11, 16));
+    c.rrect(W * 0.5f - W * 0.082f, H * 0.020f, W * 0.164f, H * 0.049f, 9 * S, rgb(36, 46, 66), rgb(18, 24, 36));
+    // hood (red, sloping to the horizon) then dashboard
+    int hy0 = int(H * 0.715f + bob), hy1 = int(H * 0.84f + bob);
+    for (int y = hy0; y < hy1; y++) {
+        float t = float(y - hy0) / std::max(1, hy1 - hy0);
+        int half = int(W * (0.17f + 0.29f * t));
+        uint32_t col = mixc(mixc(body, rgb(255, 255, 255), 0.30f), mixc(body, rgb(0, 0, 0), 0.25f), t);
+        c.rect(W / 2 - half, y, half * 2, 1, col);
+        c.rect(W / 2 - int(W * 0.012f * (0.4f + t)), y, int(W * 0.024f * (0.4f + t)), 1, argb(60, 255, 255, 255));
+    }
+    c.vgrad(0, int(H * 0.835f + bob), W, int(H * 0.17f), rgb(30, 33, 44), rgb(7, 8, 11));
+    c.rect(0, int(H * 0.835f + bob), W, int(2 * S), rgb(70, 76, 96));
+    // dash cluster + steering wheel
+    float cx = W * 0.5f, cy = H * 0.99f + bob, R = H * 0.225f;
+    float rot = steer_vis * 1.25f;                                           // radians
+    c.ring(cx, cy, R - 20 * S, R, 0, 2 * PI_F, rgb(24, 26, 34));
+    c.ring(cx, cy, R - 4 * S, R, 0, 2 * PI_F, rgb(58, 62, 78));
+    c.ring(cx, cy, R - 20 * S, R - 16 * S, 0, 2 * PI_F, rgb(10, 11, 15));
+    float m0 = -PI_F * 0.5f + rot;                                             // red top marker
+    c.ring(cx, cy, R - 20 * S, R, m0 - 0.10f + 2 * PI_F, m0 + 0.10f + 2 * PI_F, rgb(230, 40, 50));
+    for (int k = 0; k < 3; k++) {                                              // spokes
+        float a = rot + k * PI_F * 0.5f + PI_F;
+        c.line(cx, cy, cx + cosf(a) * (R - 12 * S), cy + sinf(a) * (R - 12 * S), 22 * S, rgb(20, 22, 30));
+    }
+    c.circle(cx, cy, 44 * S, rgb(30, 33, 44));
+    c.circle(cx, cy, 30 * S, rgb(210, 40, 50));
+    for (int sd = -1; sd <= 1; sd += 2) {                                      // gloved hands at 10 and 2
+        float a = -PI_F * 0.5f + rot + sd * 0.98f;
+        float hx = cx + cosf(a) * (R - 10 * S), hy = cy + sinf(a) * (R - 10 * S);
+        c.rrect(hx - 26 * S, hy - 20 * S, 52 * S, 40 * S, 16 * S, rgb(52, 56, 70), rgb(20, 22, 30));
+        for (int f = 0; f < 4; f++) c.rrect(hx - 22 * S + f * 11.5f * S, hy - 24 * S, 9 * S, 16 * S, 4 * S, rgb(44, 48, 62));
+        c.rrect(hx - 10 * S, hy - 28 * S, 22 * S, 8 * S, 4 * S, argb(80, 255, 255, 255));
+    }
 }
 
 void Game::hud(Cv& c) {
@@ -602,20 +663,20 @@ void Game::overlay(Cv& c) {
         c.text(98 * S + 5 * S, 100 * S + 5 * S, sc, argb(140, 255, 90, 20), title);
         c.text(98 * S, 100 * S, sc, rgb(255, 255, 255), title);
         c.text(100 * S, 100 * S + 7 * sc + 12 * S, 3.2f * S, rgb(255, 170, 90), state == MENU ? "SABAK STUDIOS  -  PS4 EDITION" : "RACE IN PROGRESS");
-        const char* mi[5]; char qb[40], lb[40];
+        const char* mi[6]; char qb[40], lb[40];
         static const char* QN[3] = {"540P  (FASTEST)", "720P  (BALANCED)", "1080P  (SHARPEST)"};
         int n;
         if (state == MENU) {
             snprintf(qb, sizeof qb, "GRAPHICS:  < %s >", QN[quality]);
             snprintf(lb, sizeof lb, "LAPS:  < %d >", laps_total);
-            mi[0] = "START RACE"; mi[1] = "CONTROLS"; mi[2] = qb; mi[3] = show_fps ? "FPS COUNTER:  ON" : "FPS COUNTER:  OFF"; mi[4] = lb; n = 5;
+            mi[0] = "START RACE"; mi[1] = "CONTROLS"; mi[2] = qb; mi[3] = show_fps ? "FPS COUNTER:  ON" : "FPS COUNTER:  OFF"; mi[4] = lb; mi[5] = fpv ? "CAMERA:  FIRST PERSON" : "CAMERA:  CHASE"; n = 6;
         } else { mi[0] = "RESUME"; mi[1] = "RESTART"; mi[2] = "CONTROLS"; mi[3] = "MAIN MENU"; n = 4; }
-        float y0 = 300 * S;
+        float y0 = 262 * S;
         for (int i = 0; i < n; i++) {
-            float y = y0 + i * 66 * S, sel = (i == menu_sel) ? 1.0f : 0.0f, x = 90 * S + sel * 14 * S;
-            c.rrect(x, y, 560 * S, 58 * S, 12 * S, sel ? rgb(255, 130, 34) : argb(170, 18, 22, 38), sel ? rgb(214, 70, 24) : argb(170, 28, 32, 52));
-            if (sel) c.rrect(x - 8 * S, y + 8 * S, 5 * S, 42 * S, 2 * S, rgb(255, 230, 120));
-            c.text_sh(x + 28 * S, y + 17 * S, 3.8f * S, sel ? rgb(255, 255, 255) : rgb(200, 208, 228), mi[i]);
+            float y = y0 + i * 58 * S, sel = (i == menu_sel) ? 1.0f : 0.0f, x = 90 * S + sel * 14 * S;
+            c.rrect(x, y, 560 * S, 50 * S, 12 * S, sel ? rgb(255, 130, 34) : argb(170, 18, 22, 38), sel ? rgb(214, 70, 24) : argb(170, 28, 32, 52));
+            if (sel) c.rrect(x - 8 * S, y + 7 * S, 5 * S, 36 * S, 2 * S, rgb(255, 230, 120));
+            c.text_sh(x + 28 * S, y + 13 * S, 3.6f * S, sel ? rgb(255, 255, 255) : rgb(200, 208, 228), mi[i]);
         }
         prompt(c, 90 * S, H - 62 * S, B_CROSS, "SELECT", S);
         prompt(c, 330 * S, H - 62 * S, B_UP, "MOVE", S);
@@ -679,7 +740,7 @@ void Game::render(uint32_t* fb) {
     Cv c{fb, render_w(), render_h(), render_h() / 720.0f};
     bool race_scene = state == RACE || state == COUNTDOWN || state == FINISH || state == PAUSED || (state == CONTROLS && ctl_return == PAUSED);
     if (race_scene) scene(c, z, px, true); else scene(c, demo_z, 0.0f, false);
-    if (state == RACE || state == COUNTDOWN) hud(c);
-    else if (state == PAUSED || state == FINISH) hud(c);
+    if (race_scene && fpv) cockpit(c);
+    if (race_scene) hud(c);
     overlay(c);
 }

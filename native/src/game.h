@@ -7,7 +7,7 @@
 
 // HAIRPIN RUSH (PS4 native): software-rendered pseudo-3D road racer with hairpin bends, 5 rivals,
 // AAA-style HUD / menus and a button remapping screen.
-enum Action { A_GAS, A_BRAKE, A_HANDBRAKE, A_RESET, A_PAUSE, A_COUNT };
+enum Action { A_GAS, A_BRAKE, A_HANDBRAKE, A_RESET, A_PAUSE, A_CAMERA, A_COUNT };
 struct Rival { float z; float x; float speed; uint32_t color; };
 struct Cv;
 
@@ -20,6 +20,7 @@ public:
     int render_h() const;
     void set_quality(int q) { quality = q < 0 ? 0 : (q > 2 ? 2 : q); dirty = true; }
     int get_quality() const { return quality; }
+    bool first_person() const { return fpv; }
     uint32_t binding(int a) const { return bind[a]; }
     std::string save_blob() const;             // settings -> text (platform stores it in /data)
     void load_blob(const std::string& s);
@@ -42,6 +43,7 @@ private:
     void reset_race();
     void scene(Cv& c, float cam_z, float cam_px, bool race);
     void hud(Cv& c);
+    void cockpit(Cv& c);
     void overlay(Cv& c);
     float axis(int a, const PadState& pad, uint32_t dn) const;
     std::vector<float> curves;
@@ -54,6 +56,8 @@ private:
     // settings
     int quality = 1;                           // 0 = 540p, 1 = 720p, 2 = 1080p internal resolution
     bool show_fps = false;
+    bool fpv = true;                           // first-person (cockpit) camera, default
+    float steer_vis = 0;
     uint32_t bind[A_COUNT];
     bool dirty = false;
     // input edges

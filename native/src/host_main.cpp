@@ -48,7 +48,7 @@ int main(int argc, char** argv) {
     tap(g, B_DOWN); tap(g, B_CROSS); tap(g, B_L1);
     CHECK(g.binding(A_BRAKE) == B_L1 && g.binding(A_GAS) == B_L2, "remap: conflict swaps buttons");
     // reset to defaults row
-    for (int i = 0; i < 4; i++) tap(g, B_DOWN);
+    for (int i = 0; i < A_COUNT - 1; i++) tap(g, B_DOWN);
     tap(g, B_CROSS);
     CHECK(g.binding(A_GAS) == B_R2 && g.binding(A_BRAKE) == B_L2, "controls: reset to defaults");
     tap(g, B_DOWN); tap(g, B_CROSS);                  // BACK row
@@ -90,9 +90,11 @@ int main(int argc, char** argv) {
             char n[32]; snprintf(n, sizeof n, "race%d", shots++); shot(g, out, n);
             printf("   shot f=%d kmh=%.0f lap=%d pos=%d x=%.2f\n", f, g.speed_kmh(), g.lap(), g.place(), g.player_x());
         }
+        if (f == 900) { bool was = g.first_person(); shot(g, out, "cockpit"); tap(g, g.binding(A_CAMERA)); CHECK(g.first_person() != was, "camera button toggles view"); shot(g, out, "chase"); tap(g, g.binding(A_CAMERA)); CHECK(g.first_person() == was, "camera toggles back"); }
         if (f == 1500) { tap(g, g.binding(A_PAUSE)); CHECK(g.state == Game::PAUSED, "pause opens"); shot(g, out, "pause"); tap(g, B_CROSS); CHECK(g.state == Game::RACE, "resume works"); }
     }
     CHECK(g.finished(), "race finishes (3 laps)");
+    CHECK(Game().first_person(), "first-person camera is the default");
     for (int i = 0; i < 120; i++) { PadState p; g.update(dt, p); }
     shot(g, out, "finish");
     // --- timing of one frame at each internal resolution (host CPU; the PS4 Jaguar CPU is several times slower)
