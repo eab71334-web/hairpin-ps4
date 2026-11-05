@@ -32,7 +32,7 @@ jobs:
       - name: Host test (game logic + software renderer, no console needed)
         run: |
           cd native/src
-          g++ -O2 -std=c++17 -Wall -o /tmp/host_test game.cpp host_main.cpp
+          g++ -O2 -std=c++17 -Wall -o /tmp/host_test game.cpp sprites_data.cpp host_main.cpp
           mkdir -p /tmp/shots && /tmp/host_test /tmp/shots
 
       - name: Download OpenOrbis toolchain
@@ -57,7 +57,7 @@ jobs:
           S="$OO_PS4_TOOLCHAIN/samples"; N=HairpinRush; BUILD=${{ github.run_number }}; VER=$(printf "01.%02d" $((BUILD % 100)))
           rm -rf "$S/$N"; cp -r "$S/hello_world" "$S/$N"
           rm -rf "$S/$N/hello_world"; mkdir -p "$S/$N/$N"
-          cp native/src/*.h native/src/game.cpp native/src/main_ps4.cpp "$S/$N/$N/"
+          cp native/src/*.h native/src/game.cpp native/src/sprites_data.cpp native/src/main_ps4.cpp "$S/$N/$N/"
           # icon (512x512) and background (1920x1080) wherever the sample keeps them
           for f in icon0.png pic0.png; do
             for d in $(find "$S/$N" -type d -name sce_sys); do cp "assets/sce_sys/$f" "$d/$f"; done

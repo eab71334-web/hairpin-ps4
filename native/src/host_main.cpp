@@ -34,8 +34,20 @@ int main(int argc, char** argv) {
     Game g;
     shot(g, out, "menu");
     // --- menu: go to CONTROLS, remap ACCELERATE (R2) -> L1, expect swap-free change
+    // garage first: choose car 3 and paint 4 (second row)
     tap(g, B_DOWN);
     CHECK(g.menu_sel == 1, "menu: D-pad down moves selection");
+    tap(g, B_CROSS);
+    CHECK(g.state == Game::GARAGE, "menu: GARAGE opens");
+    tap(g, B_RIGHT); tap(g, B_RIGHT); tap(g, B_RIGHT);
+    CHECK(g.car_sel == 3, "garage: car selection changes");
+    shot(g, out, "garage");
+    tap(g, B_DOWN); for (int i = 0; i < 4; i++) tap(g, B_RIGHT);
+    CHECK(g.paint_sel == 4, "garage: paint selection changes");
+    tap(g, B_CIRCLE);
+    CHECK(g.state == Game::MENU, "garage: back to menu");
+    tap(g, B_DOWN);
+    CHECK(g.menu_sel == 2, "menu: down to CONTROLS");
     tap(g, B_CROSS);
     CHECK(g.state == Game::CONTROLS, "menu: CONTROLS opens");
     shot(g, out, "controls");
@@ -60,11 +72,11 @@ int main(int argc, char** argv) {
     // save / load settings round trip
     std::string blob = g.save_blob();
     Game g2; g2.load_blob(blob);
-    CHECK(g2.binding(A_GAS) == B_R1, "settings blob round-trips");
+    CHECK(g2.binding(A_GAS) == B_R1 && g2.car_sel == 3 && g2.paint_sel == 4, "settings blob round-trips (buttons, car, paint)");
     // graphics + laps items
     tap(g, B_DOWN);
-    CHECK(g.menu_sel == 2, "menu navigation moves");
-    g.menu_sel = 2; int q0 = g.get_quality(); tap(g, B_RIGHT);
+    CHECK(g.menu_sel == 3, "menu navigation moves");
+    g.menu_sel = 3; int q0 = g.get_quality(); tap(g, B_RIGHT);
     CHECK(g.get_quality() != q0, "graphics option changes");
     g.set_quality(2);
     g.menu_sel = 0; tap(g, B_CROSS);

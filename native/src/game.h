@@ -8,7 +8,7 @@
 // HAIRPIN RUSH (PS4 native): software-rendered pseudo-3D road racer with hairpin bends, 5 rivals,
 // AAA-style HUD / menus and a button remapping screen.
 enum Action { A_GAS, A_BRAKE, A_HANDBRAKE, A_RESET, A_PAUSE, A_CAMERA, A_COUNT };
-struct Rival { float z; float x; float speed; uint32_t color; };
+struct Rival { float z; float x; float speed; int model; int paint; };
 struct Cv;
 
 class Game {
@@ -33,17 +33,19 @@ public:
     float time_s() const { return race_t; }
     float player_x() const { return px; }
     float upcoming_curve(float ahead) const;
-    enum State { MENU, CONTROLS, COUNTDOWN, RACE, PAUSED, FINISH } state = MENU;
+    enum State { MENU, GARAGE, CONTROLS, COUNTDOWN, RACE, PAUSED, FINISH } state = MENU;
     float state_t = 0;
     int laps_total = 3;
     bool capturing = false;
-    int menu_sel = 0, ctl_sel = 0;
+    int menu_sel = 0, ctl_sel = 0, garage_row = 0;
+    int car_sel = 0, paint_sel = 0;           // player's car (index into the 10 phone-game models) and paint (15 paints)
 private:
     float curve_at(float z) const;
     void reset_race();
     void scene(Cv& c, float cam_z, float cam_px, bool race);
     void hud(Cv& c);
     void cockpit(Cv& c);
+    void garage_screen(Cv& c);
     void overlay(Cv& c);
     float axis(int a, const PadState& pad, uint32_t dn) const;
     std::vector<float> curves;
@@ -58,6 +60,8 @@ private:
     bool show_fps = false;
     bool fpv = true;                           // first-person (cockpit) camera, default
     float steer_vis = 0;
+    float topf = 1, accf = 1, gripf = 1, armf = 1;   // from the selected car's stats
+    void apply_car();
     uint32_t bind[A_COUNT];
     bool dirty = false;
     // input edges
