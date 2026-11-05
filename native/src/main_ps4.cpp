@@ -9,7 +9,7 @@
 #include <cmath>
 #include <vector>
 
-static float stick(uint8_t v) {                       // 0..255 -> -1..1 with a dead zone
+static float axis_norm(uint8_t v) {                       // 0..255 -> -1..1 with a dead zone
     float f = (float(v) - 127.5f) / 127.5f;
     return std::fabs(f) < 0.12f ? 0.0f : f;
 }
@@ -34,7 +34,7 @@ int main() {
         OrbisPadData d;
         PadState ps;
         if (scePadReadState(pad, &d) == 0) {
-            ps.steer = stick(d.leftStick.x);
+            ps.steer = axis_norm(d.leftStick.x);
             if (d.buttons & ORBIS_PAD_BUTTON_LEFT) ps.steer = -1.0f;
             if (d.buttons & ORBIS_PAD_BUTTON_RIGHT) ps.steer = 1.0f;
             ps.gas = std::fmax(d.analogButtons.r2 / 255.0f, (d.buttons & ORBIS_PAD_BUTTON_CROSS) ? 1.0f : 0.0f);
