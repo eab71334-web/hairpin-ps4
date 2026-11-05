@@ -72,7 +72,7 @@ void Game::update(float dt, const PadState& pad) {
     int ahead = 0;
     for (auto& r : rivals) {
         float c = curve_at(r.z + 400);
-        r.speed = std::clamp(r.speed + (MAX_SPEED * (0.66f - std::fabs(c) * 0.06f) - r.speed) * dt * 0.8f, 5000.0f, MAX_SPEED * 0.95f);
+        r.speed = std::clamp(r.speed + (MAX_SPEED * (0.66f - fabsf(c) * 0.06f) - r.speed) * dt * 0.8f, 5000.0f, MAX_SPEED * 0.95f);
         r.z += r.speed * dt;
         float rel = std::fmod(r.z - z + track_len * 100.0f, track_len);
         if (rel > track_len / 2) rel -= track_len;
