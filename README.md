@@ -12,6 +12,12 @@ Godot cannot run on PS4, so this is a **new, smaller game core** written for the
 - `assets/sce_sys/icon0.png` (512x512) and `pic0.png` (1920x1080) — the icon and cover, copied into the package.
 - Package identity: title **Hairpin Rush**, title id `BREW00791`, content id `IV0000-BREW00791_00-HAIRPINRUSH00000` (own homebrew ids).
 
+## Stage 2 (UI + resolution + remapping)
+- Internal render 540p / 720p / 1080p (menu: GRAPHICS), always output at 1920x1080. No 4K: a base PS4 cannot do it, and this is a CPU software renderer.
+- AAA-style HUD: arc speedometer + gear, closed-loop minimap, position/lap/time panels, hairpin warning, start lights, anti-aliased text, pause/finish screens.
+- CONTROLS screen: remap ACCELERATE / BRAKE / HANDBRAKE / RESET CAR / PAUSE to any pad button (conflicts swap). Saved to /data/hairpin_rush.cfg. Steering = left stick / D-pad. No on-screen touch buttons exist in this build.
+- Host test (menus, remap, swap, save/load, full race, timings) runs in CI before the PKG build.
+
 ## Not done yet (planned)
 1. Controller remap screen like the Godot game; sound.
 2. **LAN with phones**: the phone game uses Godot's high-level multiplayer over ENet (UDP 24565, discovery 24566). A native client cannot talk to it as is;
