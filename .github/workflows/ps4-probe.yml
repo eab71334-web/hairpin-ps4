@@ -51,10 +51,10 @@ jobs:
           S="$OO_PS4_TOOLCHAIN/samples"; N=GpuProbe; BUILD=${{ github.run_number }}
           rm -rf "$S/$N"; cp -r "$S/hello_world" "$S/$N"
           rm -rf "$S/$N/hello_world"; mkdir -p "$S/$N/$N"
-          cp native/probe/probe_main.cpp native/src/font.h "$S/$N/$N/"
+          cp native/probe/probe_main.cpp native/src/font.h native/src/ps4_shim.h "$S/$N/$N/"
           for f in icon0.png pic0.png; do for d in $(find "$S/$N" -type d -name sce_sys); do cp "assets/sce_sys/$f" "$d/$f"; done; done
           ( cd "$S/$N"
-            sed -i "s|^LIBS .*|LIBS        := -lc -lkernel -lc++ -lSceUserService -lSceVideoOut -lSceAudioOut -lScePad -lSceSysmodule -lSDL2\nEXTRAFLAGS := -O2 -std=c++17|" Makefile
+            sed -i "s|^LIBS .*|LIBS        := -lc -lkernel -lc++ -lSceUserService -lSceVideoOut -lSceAudioOut -lScePad -lSceSysmodule -lSDL2\nEXTRAFLAGS := -O2 -std=c++17 -include GpuProbe/ps4_shim.h|" Makefile
             sed -i "s/BREW00[0-9]*/BREW00792/g; s/IV0000-BREW00792_00-[A-Z0-9]*/IV0000-BREW00792_00-GPUPROBE0000000/; s/^TITLE .*/TITLE       := GPU Probe/" Makefile
             make
             cp ./*.pkg "$GITHUB_WORKSPACE/GpuProbe.pkg" )

@@ -6,7 +6,7 @@
 #include <cstddef>
 #include <string>
 #include <vector>
-#include "../src/font.h"
+#include "font.h"
 
 extern "C" {
 int sceKernelLoadStartModule(const char* name, size_t argc, const void* argv, unsigned flags, void* opt, int* res);
