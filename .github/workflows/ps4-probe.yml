@@ -60,6 +60,11 @@ jobs:
             cp ./*.pkg "$GITHUB_WORKSPACE/GpuProbe.pkg" )
           ls -la "$GITHUB_WORKSPACE"/*.pkg
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GpuProbe-pkg
+          path: GpuProbe.pkg
+
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ps4-probe
