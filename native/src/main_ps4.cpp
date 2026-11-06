@@ -33,11 +33,20 @@ static void save_cfg(const Game& g) {
     fclose(f);
 }
 
+static void blog(const char* m) {                              // boot trace: /data/hairpin_boot.txt (last line = where it died)
+    FILE* f = fopen("/data/hairpin_boot.txt", "ab");
+    if (f) { fputs(m, f); fputc('\n', f); fclose(f); }
+}
+
 int main() {
+    { FILE* f = fopen("/data/hairpin_boot.txt", "wb"); if (f) fclose(f); }
+    blog("start");
     if (SDL_Init(SDL_INIT_VIDEO) != 0) return 1;
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");      // bilinear upscale of the internal 540p/720p image to 1080p
+    blog("sdl init ok");
     SDL_Window* win = SDL_CreateWindow("Hairpin Rush", 0, 0, OUT_W, OUT_H, 0);
     SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    blog("renderer ok");
     SDL_Texture* tex = nullptr;
     int tw = 0, th = 0;
 
@@ -47,9 +56,11 @@ int main() {
     scePadInit();
     int pad = scePadOpen(userId, 0, 0, nullptr);
 
+    blog("pad ok");
     Game game;
-    game.set_threads(6);                                        // the PS4 has 8 Jaguar cores (6-7 usable by a game)
+    game.set_threads(1);                                        // the PS4 has 8 Jaguar cores (6-7 usable by a game)
     load_cfg(game);
+    blog("game ok");
     std::vector<uint32_t> fb;
     uint32_t last = SDL_GetTicks();
     for (;;) {
@@ -90,6 +101,7 @@ int main() {
             tw = w; th = h;
         }
         game.render(fb.data());
+        { static bool once = false; if (!once) { once = true; blog("first frame ok"); } }
         SDL_UpdateTexture(tex, nullptr, fb.data(), w * 4);
         SDL_RenderClear(ren);
         SDL_RenderCopy(ren, tex, nullptr, nullptr);

@@ -63,11 +63,11 @@ jobs:
             for d in $(find "$S/$N" -type d -name sce_sys); do cp "assets/sce_sys/$f" "$d/$f"; done
           done
           ( cd "$S/$N"
-            sed -i "s|^LIBS .*|LIBS        := -lc -lkernel -lc++ -lSceUserService -lSceVideoOut -lSceAudioOut -lScePad -lSceSysmodule -lSDL2\nEXTRAFLAGS := -O2 -std=c++17 -march=btver2 -fno-math-errno -include HairpinRush/ps4_shim.h -DBUILD_ID=$BUILD|" Makefile
+            sed -i "s|^LIBS .*|LIBS        := -lc -lkernel -lc++ -lSceUserService -lSceVideoOut -lSceAudioOut -lScePad -lSceSysmodule -lSDL2\nEXTRAFLAGS := -O2 -std=c++17 -march=btver2 -fno-math-errno -include HairpinRush/ps4_shim.h -DHR_NO_THREADS -DBUILD_ID=$BUILD|" Makefile
             sed -i "s/^VERSION .*/VERSION     := $VER/" Makefile
             # identity: homebrew title id / content id of OUR OWN (never a real game's id)
             sed -i "s/BREW00[0-9]*/BREW00791/g; s/IV0000-BREW00791_00-[A-Z0-9]*/IV0000-BREW00791_00-HAIRPINRUSH00000/; s/^TITLE .*/TITLE       := Hairpin Rush/" Makefile
-            make || { echo '::warning::build with threads failed - retrying single-threaded'; rm -rf HairpinRush/x64; sed -i 's|-DBUILD_ID|-DHR_NO_THREADS -DBUILD_ID|' Makefile; make; }
+            make || { echo '::warning::build with threads failed - retrying single-threaded'; rm -rf HairpinRush/x64; make; }
             cp ./*.pkg "$GITHUB_WORKSPACE/HairpinRush.pkg"; cp ./*.pkg "$GITHUB_WORKSPACE/HairpinRush-b$BUILD.pkg" )
           ls -la "$GITHUB_WORKSPACE"/*.pkg
 
