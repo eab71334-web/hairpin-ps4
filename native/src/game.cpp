@@ -1,15 +1,12 @@
 // Copyright (c) 2026 Sabak Studios. All rights reserved.
 #include "game.h"
 #include "font.h"
-#include "sprites.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
-static const float SEG = 200.0f;            // road segment length
-static const float MAX_SPEED = 22000.0f;    // ~220 km/h
 static const float PI_F = 3.14159265f;
 
 static inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -169,7 +166,7 @@ static float btn_icon(Cv& c, float cx, float cy, float sz, uint32_t b) {
 
 // ------------------------------------------------------------------ cars + paints (same data as the phone game's catalog)
 struct CarInfo { const char* name; int rarity; float power, top, grip, armor; };
-static const CarInfo CAR_INFO[SPRITE_CAR_COUNT] = {
+static const CarInfo CAR_INFO[CAR_MESH_COUNT] = {
     {"RALLY HATCH RX", 0, 1.00f, 165, 1.00f, 1.00f}, {"DUNE BUGGY", 1, 0.95f, 150, 1.25f, 0.90f}, {"MUSCLE GT", 1, 1.20f, 180, 0.88f, 1.00f},
     {"COSWORTH RS", 1, 1.15f, 178, 1.00f, 1.00f},    {"TRAIL 4X4", 2, 1.05f, 160, 1.10f, 1.35f}, {"CHARGER R/T", 2, 1.30f, 186, 0.95f, 1.15f},
     {"APEX COUPE", 2, 1.25f, 195, 1.12f, 0.95f},     {"M4 COMPETITION", 2, 1.35f, 205, 1.15f, 1.00f}, {"GT3 RACER", 3, 1.40f, 210, 1.30f, 1.00f},
@@ -183,100 +180,51 @@ static const PaintInfo PAINTS[PAINT_COUNT] = {
 static const uint32_t RARITY_COL[4] = {0xFFB3BFD1u, 0xFF4099FFu, 0xFFB359F2u, 0xFFFFB31Au};
 static const char* RARITY_NAME[4] = {"COMMON", "RARE", "EPIC", "LEGENDARY"};
 
-// draws a car sprite (bottom-centre anchored), body area tinted with the paint, optional fog blend
-static void draw_sprite(Cv& c, int model, float cx, float by, float w, int paint, float fog, uint32_t fogc, float glow) {
-    const SpriteCar& sp = SPRITE_CARS[model];
-    if (w < 2) return;
-    float dh = w * sp.h / sp.w, x0 = cx - w * 0.5f, y0 = by - dh;
-    int xa = std::max(0, int(x0)), xb = std::min(c.W, int(x0 + w) + 1), ya = std::max(0, int(y0)), yb = std::min(c.H, int(by) + 1);
-    if (xb <= xa || yb <= ya) return;
-    const PaintInfo& pi = PAINTS[paint];
-    float pr = pi.r / 255.0f * 1.06f, pg = pi.g / 255.0f * 1.06f, pb = pi.b / 255.0f * 1.06f;
-    int fr = (fogc >> 16) & 255, fg = (fogc >> 8) & 255, fb2 = fogc & 255;
-    float sx = sp.w / w, sy = sp.h / dh;
-    for (int y = ya; y < yb; y++) {
-        float v = (y + 0.5f - y0) * sy - 0.5f;
-        int iv = int(floorf(v)); float fv = v - iv;
-        int v0 = std::max(0, std::min(sp.h - 1, iv)), v1 = std::max(0, std::min(sp.h - 1, iv + 1));
-        uint32_t* row = c.fb + y * c.W;
-        for (int x = xa; x < xb; x++) {
-            float u = (x + 0.5f - x0) * sx - 0.5f;
-            int iu = int(floorf(u)); float fu = u - iu;
-            int u0 = std::max(0, std::min(sp.w - 1, iu)), u1 = std::max(0, std::min(sp.w - 1, iu + 1));
-            const uint8_t* p00 = sp.data + (v0 * sp.w + u0) * 5; const uint8_t* p10 = sp.data + (v0 * sp.w + u1) * 5;
-            const uint8_t* p01 = sp.data + (v1 * sp.w + u0) * 5; const uint8_t* p11 = sp.data + (v1 * sp.w + u1) * 5;
-            float w00 = (1 - fu) * (1 - fv), w10 = fu * (1 - fv), w01 = (1 - fu) * fv, w11 = fu * fv;
-            float a = (p00[3] * w00 + p10[3] * w10 + p01[3] * w01 + p11[3] * w11);
-            if (a < 3) continue;
-            float inv = 1.0f / 255.0f, aw0 = p00[3] * w00, aw1 = p10[3] * w10, aw2 = p01[3] * w01, aw3 = p11[3] * w11, asum = aw0 + aw1 + aw2 + aw3;
-            float m = (p00[4] * aw0 + p10[4] * aw1 + p01[4] * aw2 + p11[4] * aw3) / asum * inv;
-            float r = (p00[0] * aw0 + p10[0] * aw1 + p01[0] * aw2 + p11[0] * aw3) / asum * inv;
-            float g = (p00[1] * aw0 + p10[1] * aw1 + p01[1] * aw2 + p11[1] * aw3) / asum * inv;
-            float b = (p00[2] * aw0 + p10[2] * aw1 + p01[2] * aw2 + p11[2] * aw3) / asum * inv;
-            r *= 1.0f + m * (pr - 1.0f); g *= 1.0f + m * (pg - 1.0f); b *= 1.0f + m * (pb - 1.0f);
-            if (glow > 0 && r > 0.8f && g < 0.45f && b < 0.4f && m < 0.3f) { r = 1.0f; g = 0.15f + 0.1f * glow; b = 0.1f; }   // brighter tail lights
-            int R = int(clampf(r, 0, 1) * 255), G = int(clampf(g, 0, 1) * 255), B = int(clampf(b, 0, 1) * 255);
-            if (fog > 0) { R = int(R + (fr - R) * fog); G = int(G + (fg - G) * fog); B = int(B + (fb2 - B) * fog); }
-            row[x] = blendpx(row[x], argb(255, R, G, B), int(a));
-        }
-    }
-}
 
-// ------------------------------------------------------------------ game
 static const uint32_t DEFAULT_BIND[A_COUNT] = {B_R2, B_L2, B_SQUARE, B_TRIANGLE, B_OPTIONS, B_R3};
 static const char* ACTION_NAME[A_COUNT] = {"ACCELERATE", "BRAKE", "HANDBRAKE", "RESET CAR", "PAUSE", "CAMERA VIEW"};
 
 Game::Game() {
-    struct P { int len; float c; };
-    const P plan[] = {{40, 0}, {25, 0.9f}, {20, 0}, {30, -1.1f}, {25, 0}, {22, 3.4f}, {18, 0}, {30, 0.6f}, {26, -0.8f}, {14, 0},
-                      {20, -3.6f}, {28, 0}, {24, 1.2f}, {20, 0}, {26, 3.2f}, {30, 0}, {25, -1.0f}, {35, 0}};
-    for (auto& p : plan) for (int i = 0; i < p.len * 6; i++) {
-        float t = float(i) / (p.len * 6);
-        float ease = std::min(1.0f, std::min(t, 1.0f - t) * 4.0f);
-        curves.push_back(p.c * (p.c == 0 ? 0 : ease));
-    }
-    track_len = curves.size() * SEG;
     for (int i = 0; i < A_COUNT; i++) bind[i] = DEFAULT_BIND[i];
-    // minimap: integrate heading, force the loop closed
-    int N = int(curves.size());
-    std::vector<float> hd(N + 1, 0.0f);
-    for (int i = 0; i < N; i++) hd[i + 1] = hd[i] + curves[i] * 0.012f;
-    float tot = hd[N];
-    float k = fabsf(tot) > 0.1f ? (2 * PI_F * (tot > 0 ? 1.0f : -1.0f)) / tot : 1.0f;
-    std::vector<float> xs(N + 1, 0.0f), ys(N + 1, 0.0f);
-    for (int i = 0; i < N; i++) { float h = hd[i] * k; xs[i + 1] = xs[i] + cosf(h); ys[i + 1] = ys[i] + sinf(h); }
-    float ex = xs[N], ey = ys[N];
-    float mnx = 1e9f, mxx = -1e9f, mny = 1e9f, mxy = -1e9f;
-    for (int i = 0; i <= N; i++) { xs[i] -= ex * i / N; ys[i] -= ey * i / N; mnx = std::min(mnx, xs[i]); mxx = std::max(mxx, xs[i]); mny = std::min(mny, ys[i]); mxy = std::max(mxy, ys[i]); }
-    float sp = std::max(mxx - mnx, mxy - mny);
-    if (sp < 1e-3f) sp = 1;
-    for (int i = 0; i < N; i += 4) { mm_x.push_back((xs[i] - mnx) / sp + (1 - (mxx - mnx) / sp) * 0.5f); mm_y.push_back((ys[i] - mny) / sp + (1 - (mxy - mny) / sp) * 0.5f); }
+    rend.threads = 4;
+    load_stage();
     reset_race();
+}
+
+void Game::load_stage() {
+    if (stage_loaded == stage_sel) return;
+    world.load(stage_sel);
+    stage_loaded = stage_sel;
+    mm_x.clear(); mm_y.clear();
+    float mnx = 1e9f, mxx = -1e9f, mnz = 1e9f, mxz = -1e9f;
+    const StageData& sd = STAGES[stage_sel];
+    for (int i = 0; i < sd.npts; i++) { mnx = std::min(mnx, sd.pts[i].x); mxx = std::max(mxx, sd.pts[i].x); mnz = std::min(mnz, sd.pts[i].z); mxz = std::max(mxz, sd.pts[i].z); }
+    float sp = std::max(mxx - mnx, mxz - mnz);
+    if (sp < 1) sp = 1;
+    float ox = (1.0f - (mxx - mnx) / sp) * 0.5f, oy = (1.0f - (mxz - mnz) / sp) * 0.5f;
+    for (int i = 0; i < sd.npts; i += 3) { mm_x.push_back((sd.pts[i].x - mnx) / sp + ox); mm_y.push_back((sd.pts[i].z - mnz) / sp + oy); }
 }
 
 void Game::apply_car() {
     const CarInfo& ci = CAR_INFO[car_sel];
     topf = ci.top / 205.0f; accf = ci.power; gripf = ci.grip; armf = ci.armor;
+    vmax = ci.top / 3.6f * 0.97f;
 }
 
 void Game::reset_race() {
+    load_stage();
     apply_car();
-    z = 0; px = 0; speed = 0; race_t = 0; lap_ = 1; place_ = 6; lap_z0 = 0; shake = 0; braking = 0;
+    s_ = 0; d_ = 0; yaw_ = 0; speed = 0; race_t = 0; place_ = 6; shake = 0; braking = 0; steer_vis = 0;
     rivals.clear();
     const int models[5] = {3, 6, 2, 7, 0}, paints[5] = {1, 4, 5, 6, 12};
-    for (int i = 0; i < 5; i++) rivals.push_back({SEG * (12 + i * 9), (i % 2 ? 0.35f : -0.35f), MAX_SPEED * (0.62f + 0.05f * i), models[i], paints[i]});
+    for (int i = 0; i < 5; i++) {
+        float top = CAR_INFO[models[i]].top / 3.6f;
+        rivals.push_back({16.0f + i * 13.0f, (i % 2 ? 2.6f : -2.6f), 0.0f, top * (0.66f + 0.045f * i), models[i], paints[i]});
+    }
 }
 
 int Game::render_w() const { static const int w[3] = {960, 1280, 1920}; return w[quality]; }
 int Game::render_h() const { static const int h[3] = {540, 720, 1080}; return h[quality]; }
-
-float Game::curve_at(float zz) const {
-    if (curves.empty()) return 0;
-    zz = fmodf(zz, track_len);
-    if (zz < 0) zz += track_len;
-    return curves[int(zz / SEG) % curves.size()];
-}
-float Game::upcoming_curve(float ahead) const { return curve_at(z + ahead); }
 
 float Game::axis(int a, const PadState& pad, uint32_t dn) const {
     uint32_t b = bind[a];
@@ -287,18 +235,18 @@ float Game::axis(int a, const PadState& pad, uint32_t dn) const {
 
 std::string Game::save_blob() const {
     char buf[240];
-    snprintf(buf, sizeof buf, "v3 %u %u %u %u %u %u q%d f%d l%d c%d k%d p%d", bind[0], bind[1], bind[2], bind[3], bind[4], bind[5], quality, show_fps ? 1 : 0, laps_total, fpv ? 1 : 0, car_sel, paint_sel);
+    snprintf(buf, sizeof buf, "v4 %u %u %u %u %u %u q%d f%d s%d c%d k%d p%d", bind[0], bind[1], bind[2], bind[3], bind[4], bind[5], quality, show_fps ? 1 : 0, stage_sel, fpv ? 1 : 0, car_sel, paint_sel);
     return buf;
 }
 void Game::load_blob(const std::string& s) {
-    unsigned b[A_COUNT]; int q, f, l, cm, ks, ps;
-    if (sscanf(s.c_str(), "v3 %u %u %u %u %u %u q%d f%d l%d c%d k%d p%d", &b[0], &b[1], &b[2], &b[3], &b[4], &b[5], &q, &f, &l, &cm, &ks, &ps) != 12) return;
-    fpv = cm != 0;
-    car_sel = ks < 0 ? 0 : (ks >= SPRITE_CAR_COUNT ? SPRITE_CAR_COUNT - 1 : ks);
+    unsigned b[A_COUNT]; int q, f, st, cm, ks, ps;
+    if (sscanf(s.c_str(), "v4 %u %u %u %u %u %u q%d f%d s%d c%d k%d p%d", &b[0], &b[1], &b[2], &b[3], &b[4], &b[5], &q, &f, &st, &cm, &ks, &ps) != 12) return;
+    for (int i = 0; i < A_COUNT; i++) if (b[i] && (b[i] & (b[i] - 1)) == 0 && b[i] <= B_RIGHT) bind[i] = b[i];
+    quality = q < 0 ? 0 : (q > 2 ? 2 : q); show_fps = f != 0; fpv = cm != 0;
+    stage_sel = st < 0 ? 0 : (st >= STAGE_COUNT ? STAGE_COUNT - 1 : st);
+    car_sel = ks < 0 ? 0 : (ks >= CAR_MESH_COUNT ? CAR_MESH_COUNT - 1 : ks);
     paint_sel = ps < 0 ? 0 : (ps >= PAINT_COUNT ? PAINT_COUNT - 1 : ps);
     apply_car();
-    for (int i = 0; i < A_COUNT; i++) if (b[i] && (b[i] & (b[i] - 1)) == 0 && b[i] <= B_RIGHT) bind[i] = b[i];
-    quality = q < 0 ? 0 : (q > 2 ? 2 : q); show_fps = f != 0; laps_total = l < 1 ? 1 : (l > 9 ? 9 : l);
 }
 
 void Game::update(float dt, const PadState& pad) {
@@ -314,7 +262,8 @@ void Game::update(float dt, const PadState& pad) {
     uint32_t ed_raw = dn & ~prev_raw, ed = nv & ~prev_nav;
     prev_raw = dn; prev_nav = nv;
     state_t += dt;
-    demo_z += 4500.0f * dt;
+    demo_s += 16.0f * dt;
+    spin += dt * 0.5f;
     auto wrap = [](int v, int n) { return (v % n + n) % n; };
 
     if (state == MENU) {
@@ -328,7 +277,7 @@ void Game::update(float dt, const PadState& pad) {
         else if (menu_sel == 2 && ok) { ctl_return = MENU; state = CONTROLS; ctl_sel = 0; capturing = false; }
         else if (menu_sel == 3 && (dir || ok)) { quality = wrap(quality + (dir ? dir : 1), 3); dirty = true; }
         else if (menu_sel == 4 && (dir || ok)) { show_fps = !show_fps; dirty = true; }
-        else if (menu_sel == 5 && (dir || ok)) { laps_total = std::max(1, std::min(9, laps_total + (dir ? dir : 1))); if (laps_total == 9 && !dir) laps_total = 1; dirty = true; }
+        else if (menu_sel == 5 && (dir || ok)) { stage_sel = wrap(stage_sel + (dir ? dir : 1), STAGE_COUNT); dirty = true; }
         else if (menu_sel == 6 && (dir || ok)) { fpv = !fpv; dirty = true; }
         return;
     }
@@ -336,7 +285,7 @@ void Game::update(float dt, const PadState& pad) {
         if (ed & (B_UP | B_DOWN)) garage_row = 1 - garage_row;
         int dir = ((ed & B_RIGHT) ? 1 : 0) - ((ed & B_LEFT) ? 1 : 0);
         if (dir) {
-            if (garage_row == 0) car_sel = wrap(car_sel + dir, SPRITE_CAR_COUNT); else paint_sel = wrap(paint_sel + dir, PAINT_COUNT);
+            if (garage_row == 0) car_sel = wrap(car_sel + dir, CAR_MESH_COUNT); else paint_sel = wrap(paint_sel + dir, PAINT_COUNT);
             apply_car(); dirty = true;
         }
         if (ed & (B_CIRCLE | B_CROSS)) { state = MENU; state_t = 0; }
@@ -388,234 +337,175 @@ void Game::update(float dt, const PadState& pad) {
     }
     // ---------------- RACE
     if (ed_raw & bind[A_PAUSE]) { state = PAUSED; menu_sel = 0; return; }
-    if (ed_raw & bind[A_RESET]) { px = 0; speed *= 0.5f; }
+    if (ed_raw & bind[A_RESET]) { d_ = 0; yaw_ = 0; speed *= 0.4f; }
     if (ed_raw & bind[A_CAMERA]) { fpv = !fpv; dirty = true; }
     race_t += dt;
     float gas = axis(A_GAS, pad, dn), brake = axis(A_BRAKE, pad, dn);
     bool hb = (dn & bind[A_HANDBRAKE]) != 0;
-    float steer = fabsf(pad.lx) > 0.1f ? pad.lx : 0.0f;
+    float steer = fabsf(pad.lx) > 0.1f ? pad.lx : 0.0f;                    // + = right
     if (dn & B_LEFT) steer = -1.0f;
     if (dn & B_RIGHT) steer = 1.0f;
-    braking = brake > 0.1f || hb ? 1.0f : 0.0f;
     steer_vis += (steer - steer_vis) * std::min(1.0f, dt * 9.0f);
-    float accel = gas * 7000.0f * accf - brake * 16000.0f - (gas < 0.05f ? 2500.0f : 0.0f) - (hb ? 9000.0f : 0.0f);
-    bool off = fabsf(px) > 1.05f;
-    if (off) accel -= 9000.0f;
-    speed += accel * dt * (1.0f - speed / (MAX_SPEED * 1.15f));
-    speed = clampf(speed, 0.0f, MAX_SPEED * topf);
-    if (off && speed > 5500.0f) speed = std::max(5500.0f, speed - 14000.0f * dt);
-    float sp = speed / MAX_SPEED;
-    px += steer * dt * 2.2f * (0.35f + sp) * (hb ? 1.5f : 1.0f) * powf(gripf, 0.7f);
-    px -= curve_at(z) * sp * sp * dt * 0.95f / gripf;
-    px = clampf(px, -2.2f, 2.2f);
-    z += speed * dt;
-    if (z - lap_z0 >= track_len) { lap_z0 += track_len; lap_++; if (lap_ > laps_total) { state = FINISH; state_t = 0; lap_ = laps_total; } }
+    braking = (brake > 0.1f || hb) ? 1.0f : 0.0f;
+    bool off = fabsf(d_) > 7.6f;
+    float a = gas * 17.0f * accf * (1.0f - speed / vmax) - brake * 32.0f - (gas < 0.05f ? 3.0f : 0.0f) - (hb ? 16.0f : 0.0f);
+    if (off) a -= 14.0f + speed * 0.5f;
+    speed = clampf(speed + a * dt, 0.0f, vmax);
+    if (off && speed > 16.0f) speed = std::max(16.0f, speed - 22.0f * dt);
+    float curv = world.curvature_at(s_);                                    // + = road turns left
+    float authority = (1.7f * powf(gripf, 0.7f)) / (1.0f + speed / 38.0f) * (hb ? 1.5f : 1.0f);
+    yaw_ += (-steer * authority - yaw_ * 1.6f * gripf) * dt - curv * speed * dt;
+    yaw_ = clampf(yaw_, -0.9f, 0.9f);
+    s_ += speed * cosf(yaw_) * dt;
+    d_ += speed * sinf(yaw_) * dt;                                          // yaw_ > 0 = nose turned left -> d_ (left is +) grows
+    d_ = clampf(d_, -13.0f, 13.0f);
+    if (fabsf(d_) >= 13.0f) speed *= (1.0f - 4.0f * dt);
+    bob_t += dt * speed * 0.5f;
+    // rivals
     int ahead = 0;
     for (auto& r : rivals) {
-        float cv = curve_at(r.z + 400);
-        r.speed = clampf(r.speed + (MAX_SPEED * (0.66f - fabsf(cv) * 0.06f) - r.speed) * dt * 0.8f, 5000.0f, MAX_SPEED * 0.95f);
-        r.z += r.speed * dt;
-        float rel = fmodf(r.z - z + track_len * 100.0f, track_len);
-        if (rel > track_len / 2) rel -= track_len;
-        if (rel > 0) ahead++;
-        if (fabsf(rel) < 150.0f && fabsf(r.x - px) < 0.32f) {
+        float c2 = world.curvature_at(r.s + 25.0f);
+        float vc = c2 > 1e-3f || c2 < -1e-3f ? sqrtf(9.0f / fabsf(c2)) : 99.0f;
+        float tv = std::min(r.vmax, vc);
+        r.speed += clampf(tv - r.speed, -14.0f * dt, 9.0f * dt);
+        r.s += r.speed * dt;
+        float ds = r.s - s_, dd = r.d - d_;
+        if (ds > 0) ahead++;
+        if (fabsf(ds) < 4.6f && fabsf(dd) < 1.9f) {
             speed *= (1.0f - 3.0f * dt * armf);
-            px += (px >= r.x ? 1.0f : -1.0f) * dt * 1.5f;
-            shake = 0.25f;
+            d_ += (dd > 0 ? -1.0f : 1.0f) * 3.5f * dt;
+            shake = 0.3f;
         }
     }
     place_ = ahead + 1;
     shake = std::max(0.0f, shake - dt);
+    if (s_ >= world.length() - 20.0f) { state = FINISH; state_t = 0; }
 }
 
-// ------------------------------------------------------------------ rendering
-void Game::scene(Cv& c, float cz, float cpx, bool race) {
-    const int W = c.W, H = c.H;
-    const float S = c.S;
-    const int HZ = int(H * 0.42f);
-    const int HE = H + H / 3;
-    if ((int)xoff.size() < HE) { xoff.assign(HE, 0.0f); rwid.assign(HE, 0.0f); }
-    float bend = curve_at(cz + 1500);
-    // sky
-    const uint32_t top = rgb(18, 34, 92), mid = rgb(196, 88, 104), low = rgb(255, 196, 120);
-    for (int y = 0; y < HZ; y++) {
-        float t = float(y) / HZ;
-        c.rect(0, y, W, 1, t < 0.6f ? mixc(top, mid, t / 0.6f) : mixc(mid, low, (t - 0.6f) / 0.4f));
+
+// ------------------------------------------------------------------ 3D scene
+static uint32_t paint_rgb(int p) { return 0xFF000000u | (uint32_t(PAINTS[p].r) << 16) | (uint32_t(PAINTS[p].g) << 8) | PAINTS[p].b; }
+
+static void draw_car3d(Renderer& r, int model, const Xf& xf, uint32_t paint, bool skip_glass, float wheel_angle) {
+    const CarModel& cm = car_model(model);
+    float dist = len(xf.t - r.cam_pos());
+    float lod = clampf(1.45f - dist / 80.0f, 0.10f, 1.0f);
+    r.mesh(cm.body, xf, paint, skip_glass, 450.0f, lod);
+    if (!cm.wheel.tris.empty() && dist < 40.0f) {
+        Xf pv = xf * Xf::make(cm.pivot, 0.0f, cm.pitch, 0.0f) * Xf::make(V3(0, 0, 0), wheel_angle);
+        r.mesh(cm.wheel, pv, 0xFF111111u, skip_glass, 450.0f, 1.0f);
     }
-    float sunx = W * 0.58f - bend * 26.0f * S, suny = HZ - 0.13f * H;
-    for (int i = 0; i < 6; i++) c.circle(sunx, suny, (0.20f - i * 0.028f) * H * 0.5f * 1.9f, argb(26, 255, 220, 150));
-    c.circle(sunx, suny, 0.055f * H, rgb(255, 238, 190));
-    // mountains (two parallax layers)
-    std::vector<int> hg(W);
-    for (int layer = 0; layer < 2; layer++) {
-        float amp = (layer ? 62.0f : 96.0f) * S;
-        uint32_t ctop = layer ? rgb(86, 56, 92) : rgb(120, 76, 104), cbot = layer ? rgb(52, 36, 66) : rgb(84, 56, 84);
-        int mx = 0;
-        for (int x = 0; x < W; x++) {
-            float u = x / S * (layer ? 0.0075f : 0.0045f) + cz * 0.00002f * (bend + 0.2f) * (1 + layer) + layer * 7.0f;
-            hg[x] = int(amp * (0.45f + 0.30f * sinf(u * 1.7f) + 0.25f * sinf(u * 4.3f + 1.3f)));
-            mx = std::max(mx, hg[x]);
-        }
-        for (int y = HZ - mx; y < HZ; y++) {
-            int hh = HZ - y;
-            uint32_t* p = c.fb + y * W;
-            uint32_t col = mixc(cbot, ctop, float(hh) / std::max(1, mx));
-            for (int x = 0; x < W; x++) if (hg[x] >= hh) p[x] = col;
-        }
-    }
-    uint32_t fogc = rgb(182, 128, 124);
-    c.vgrad(0, HZ - int(34 * S), W, int(34 * S), argb(0, 182, 128, 124), argb(210, 182, 128, 124));
-    // road
-    const float K = 90000.0f * S;
-    float dx = 0, xo = 0;
-    for (int y = HE - 1; y > HZ; y--) {
-        float t = float(y - HZ) / (H - HZ);
-        rwid[y] = 1.15f * W * 0.5f * t * 0.92f;
-        if (y >= H) { xoff[y] = 0; continue; }
-    }
-    for (int y = H - 1; y > HZ; y--) {
-        float d = K / float(y - HZ);
-        dx += curve_at(cz + d) * 0.0075f / S;
-        xo += dx;
-        xoff[y] = xo;
-        float w = rwid[y], cxr = W * 0.5f - cpx * w + xo;
-        float dist = cz + d;
-        bool stripe = (int(dist / 800.0f) & 1) != 0;
-        float fog = std::min(1.0f, d / 42000.0f);
-        uint32_t grass = mixc(stripe ? rgb(58, 150, 70) : rgb(46, 132, 60), fogc, fog);
-        uint32_t road = mixc(stripe ? rgb(92, 94, 104) : rgb(82, 84, 94), fogc, fog);
-        uint32_t rumb = mixc(stripe ? rgb(238, 238, 238) : rgb(222, 40, 44), fogc, fog);
-        uint32_t edge = mixc(rgb(236, 236, 240), fogc, fog);
-        int l = int(cxr - w), r = int(cxr + w), rb = std::max(1, int(w * 0.09f));
-        uint32_t* row = c.fb + y * W;
-        int a = std::max(0, std::min(W, l - rb)), b = std::max(0, std::min(W, r + rb));
-        std::fill(row, row + a, grass);
-        std::fill(row + b, row + W, grass);
-        for (int x = a; x < std::min(W, std::max(a, l)); x++) row[x] = rumb;
-        for (int x = std::max(a, std::min(W, r)); x < b; x++) row[x] = rumb;
-        int rl = std::max(0, l), rr = std::min(W, r);
-        if (rr > rl) std::fill(row + rl, row + rr, road);
-        int ew = std::max(1, int(w * 0.022f));                                   // solid edge lines
-        for (int x = std::max(0, l + ew); x < std::min(W, l + ew * 3); x++) row[x] = edge;
-        for (int x = std::max(0, r - ew * 3); x < std::min(W, r - ew); x++) row[x] = edge;
-        if ((int(dist / 400.0f) & 1) == 0) {                                      // dashed lane lines
-            int lw = std::max(1, int(w * 0.015f));
-            for (int k = -1; k <= 1; k += 2) { int lx = int(cxr + k * w * 0.34f); for (int x = std::max(0, lx - lw); x < std::min(W, lx + lw); x++) row[x] = mixc(rgb(240, 240, 240), fogc, fog); }
-        }
-    }
-    // roadside objects + rivals, far to near
-    struct Item { float d; int kind; int idx; float side; };
-    std::vector<Item> items;
-    const float step = 650.0f, dmin = K / float(H - HZ) * 0.9f, dmax = 40000.0f;
-    long n0 = long((cz + dmin) / step) + 1, n1 = long((cz + dmax) / step);
-    for (long n = n0; n <= n1; n++) {
-        float dd = n * step - cz;
-        if (dd < dmin) continue;
-        float cv = curve_at(n * step);
-        for (int sd = -1; sd <= 1; sd += 2) {
-            uint32_t h = hash32(uint32_t(n * 2 + (sd > 0)));
-            if (fabsf(cv) > 2.0f && (n & 1) && sd == (cv > 0 ? -1 : 1)) { items.push_back({dd, 2, int(n), float(sd)}); continue; }   // chevron boards on hairpin outsides
-            if ((h & 7) < 5) items.push_back({dd, (h & 8) ? 0 : 1, int(h >> 4 & 0xFFFF), float(sd)});
-        }
-    }
-    if (race) for (int i = 0; i < (int)rivals.size(); i++) {
-        float rel = fmodf(rivals[i].z - cz + track_len * 100.0f, track_len);
-        if (rel > track_len / 2) rel -= track_len;
-        if (rel > 100 && rel < 40000) items.push_back({rel, 3, i, 0});
-    }
-    std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.d > b.d; });
-    for (const Item& it : items) {
-        float yf = HZ + K / it.d;
-        int y = int(yf);
-        if (y <= HZ + 1 || y >= HE) continue;
-        float w = rwid[y], cxr = W * 0.5f - cpx * w + (y < H ? xoff[y] : 0.0f);
-        float fog = std::min(1.0f, it.d / 42000.0f);
-        if (it.kind == 3) {
-            const Rival& r = rivals[it.idx];
-            draw_sprite(c, r.model, cxr + r.x * w, float(y), w * 0.46f, r.paint, fog * 0.75f, fogc, 0.0f);
-            continue;
-        }
-        float jit = hf(uint32_t(it.idx) * 7u + 3u);
-        float ox = cxr + it.side * w * (1.28f + jit * 0.9f + (it.kind == 2 ? 0.0f : 0.0f));
-        float th = w * (it.kind == 0 ? 0.62f : 0.30f) * (0.8f + 0.5f * jit);
-        if (it.kind == 0) {                                                          // pine tree
-            uint32_t dk = mixc(rgb(20, 92, 52), fogc, fog), lt = mixc(rgb(36, 132, 70), fogc, fog);
-            c.rect(int(ox - th * 0.03f), int(y - th * 0.22f), std::max(1, int(th * 0.06f)), int(th * 0.22f) + 1, mixc(rgb(80, 52, 34), fogc, fog));
-            c.tri(ox, y - th, y - th * 0.45f, th * 0.20f, dk, lt);
-            c.tri(ox, y - th * 0.78f, y - th * 0.22f, th * 0.28f, dk, lt);
-        } else if (it.kind == 1) {                                                   // bush / rock
-            c.rrect(ox - th * 0.45f, y - th * 0.55f, th * 0.9f, th * 0.55f, th * 0.25f, mixc(rgb(60, 140, 66), fogc, fog), mixc(rgb(34, 100, 50), fogc, fog));
-        } else {                                                                     // hairpin chevron board
-            float bh = w * 0.34f, bw = w * 0.30f;
-            c.rect(int(ox - bw * 0.04f), int(y - bh), std::max(1, int(bw * 0.08f)), int(bh), mixc(rgb(90, 90, 100), fogc, fog));
-            c.rrect(ox - bw * 0.5f, y - bh * 1.7f, bw, bh * 0.8f, bw * 0.06f, mixc(rgb(236, 52, 48), fogc, fog), mixc(rgb(190, 30, 36), fogc, fog));
-            const char* ch = (it.side > 0) == (curve_at(cz + it.d) > 0) ? ">" : "<";
-            if (bw > 14 * S) c.text(ox, y - bh * 1.62f, bw * 0.095f, rgb(255, 255, 255), ch, 1);
-        }
-    }
-    if (!race) return;
-    if (fpv) return;
-    // player car
-    float sx = 0, sy = 0;
-    if (shake > 0) { sx = sinf(state_t * 90) * 8 * shake * 4 * S / 4; sy = cosf(state_t * 77) * 5 * shake * S; }
-    c.rrect(W * 0.5f + sx - 230 * S, H - 62 * S + sy, 460 * S, 34 * S, 17 * S, argb(120, 0, 0, 0));
-    draw_sprite(c, car_sel, W * 0.5f + sx, H - 40 * S + sy, 400 * S, paint_sel, 0.0f, 0, braking);
 }
 
-void Game::cockpit(Cv& c) {
-    const int W = c.W, H = c.H;
-    const float S = c.S;
-    float bob = sinf(race_t * 17.0f) * (speed / MAX_SPEED) * 2.0f * S + (shake > 0 ? sinf(state_t * 90) * shake * 10.0f * S : 0.0f);
-    uint32_t body = rgb(206, 28, 44);
-    // roof + A pillars
-    int py = int(H * 0.66f);
-    for (int y = 0; y < py; y++) {
-        float t = float(y) / py;
-        int inner = int(W * (0.20f - 0.155f * t));
-        uint32_t col = mixc(rgb(8, 9, 13), rgb(22, 25, 34), t);
-        c.rect(0, y, inner, 1, col); c.rect(W - inner, y, inner, 1, col);
-        c.rect(inner - int(3 * S), y, int(3 * S), 1, rgb(46, 50, 64)); c.rect(W - inner, y, int(3 * S), 1, rgb(46, 50, 64));
+
+// a thick line between two points (forearm)
+static void rod(Renderer& r, V3 a, V3 b, float th, uint32_t col) {
+    V3 ax = norm(b - a);
+    V3 up = fabsf(ax.y) < 0.9f ? V3(0, 1, 0) : V3(1, 0, 0);
+    V3 u = norm(cross(ax, up)) * th, v = norm(cross(ax, u)) * th;
+    V3 p[8] = {a - u - v, a + u - v, a + u + v, a - u + v, b - u - v, b + u - v, b + u + v, b - u + v};
+    auto q = [&](int i, int j, int k, int l) { r.tri(p[i], p[j], p[k], col, true); r.tri(p[i], p[k], p[l], col, true); };
+    q(0, 1, 2, 3); q(4, 7, 6, 5); q(0, 4, 5, 1); q(1, 5, 6, 2); q(2, 6, 7, 3); q(3, 7, 4, 0);
+}
+
+void Game::draw_hands(const Xf& car, int model, float phi) {
+    const CarModel& cm = car_model(model);
+    if (cm.wheel.tris.empty()) return;
+    // hand over hand, like the phone game: a hand rides the rim inside a comfortable arc, then lets go and grips again further back
+    float psi_r = grip_r + phi, psi_l = grip_l + phi;
+    if (psi_r > 1.05f) grip_r -= 1.9f; else if (psi_r < -1.05f) grip_r += 1.9f;
+    if (psi_l > 1.05f) grip_l -= 1.9f; else if (psi_l < -1.05f) grip_l += 1.9f;
+    Xf pv = car * Xf::make(cm.pivot, 0.0f, cm.pitch, 0.0f);
+    const float R = 0.15f;
+    float ang[2] = {grip_r + phi, 3.14159265f + grip_l + phi};
+    for (int k = 0; k < 2; k++) {
+        V3 hp = pv.apply(V3(cosf(ang[k]) * R, 0.0f, -sinf(ang[k]) * R));
+        V3 shoulder = car.apply(V3(k == 0 ? -0.22f : -0.68f, 1.12f, 0.55f));
+        V3 elbow = hp + (shoulder - hp) * 0.55f - car.rot(V3(0, 0.16f, 0));
+        rod(rend, hp, elbow, 0.034f, 0xFF20242Eu);                    // sleeve
+        rod(rend, elbow, shoulder, 0.05f, 0xFF20242Eu);
+        V3 up = pv.rot(V3(0, 1, 0));
+        rod(rend, hp - up * 0.03f, hp + up * 0.045f, 0.045f, 0xFFC9926Au);   // hand
     }
-    c.vgrad(0, 0, W, int(H * 0.085f), rgb(8, 9, 13), argb(0, 8, 9, 13));
-    // mirrors
-    c.rrect(W * 0.045f, H * 0.40f, W * 0.105f, H * 0.075f, 14 * S, mixc(body, rgb(255, 255, 255), 0.2f), mixc(body, rgb(0, 0, 0), 0.4f));
-    c.rrect(W * 0.052f, H * 0.408f, W * 0.090f, H * 0.060f, 10 * S, rgb(32, 40, 56), rgb(16, 20, 30));
-    c.rrect(W * 0.85f, H * 0.40f, W * 0.105f, H * 0.075f, 14 * S, mixc(body, rgb(255, 255, 255), 0.2f), mixc(body, rgb(0, 0, 0), 0.4f));
-    c.rrect(W * 0.858f, H * 0.408f, W * 0.090f, H * 0.060f, 10 * S, rgb(32, 40, 56), rgb(16, 20, 30));
-    c.rrect(W * 0.5f - W * 0.09f, H * 0.012f, W * 0.18f, H * 0.065f, 12 * S, rgb(20, 22, 30), rgb(10, 11, 16));
-    c.rrect(W * 0.5f - W * 0.082f, H * 0.020f, W * 0.164f, H * 0.049f, 9 * S, rgb(36, 46, 66), rgb(18, 24, 36));
-    // hood (red, sloping to the horizon) then dashboard
-    int hy0 = int(H * 0.715f + bob), hy1 = int(H * 0.84f + bob);
-    for (int y = hy0; y < hy1; y++) {
-        float t = float(y - hy0) / std::max(1, hy1 - hy0);
-        int half = int(W * (0.17f + 0.29f * t));
-        uint32_t col = mixc(mixc(body, rgb(255, 255, 255), 0.30f), mixc(body, rgb(0, 0, 0), 0.25f), t);
-        c.rect(W / 2 - half, y, half * 2, 1, col);
-        c.rect(W / 2 - int(W * 0.012f * (0.4f + t)), y, int(W * 0.024f * (0.4f + t)), 1, argb(60, 255, 255, 255));
+}
+
+void Game::scene3d(float) {
+    const int W = render_w(), H = render_h();
+    if (rend.w() != W || rend.h() != H) rend.resize(W, H);
+    load_stage();
+    const Theme& th = world.theme();
+    bool race_scene = state == RACE || state == COUNTDOWN || state == FINISH || state == PAUSED || (state == CONTROLS && ctl_return == PAUSED);
+    uint32_t pcol = paint_rgb(paint_sel);
+    if (state == GARAGE) {
+        Camera cam; cam.fov_deg = 34;
+        float R = 12.5f;
+        V3 target(0, 0.2f, 0);
+        cam.pos = target + V3(sinf(spin) * R, 3.4f, cosf(spin) * R);
+        cam.yaw = spin; cam.pitch = -atan2f(3.2f, R);
+        cam.pos = cam.pos - V3(cosf(cam.yaw), 0, -sinf(cam.yaw)) * 3.6f;        // shift the car to the right half of the screen
+        rend.begin(cam, 0xFF0B0E18u, 0xFF1C2236u, 0xFF141A2Au, 60, 300);
+        // studio floor: disc + glowing ring in the rarity colour
+        for (int i = 0; i < 40; i++) {
+            float a0 = i * 6.2831853f / 40, a1 = (i + 1) * 6.2831853f / 40;
+            rend.tri(V3(0, 0, 0), V3(sinf(a1) * 4.0f, 0, cosf(a1) * 4.0f), V3(sinf(a0) * 4.0f, 0, cosf(a0) * 4.0f), (i & 1) ? 0xFF1A2032u : 0xFF20273Bu, true);
+            V3 o0(sinf(a0) * 4.0f, 0.01f, cosf(a0) * 4.0f), o1(sinf(a1) * 4.0f, 0.01f, cosf(a1) * 4.0f), i0(sinf(a0) * 3.85f, 0.01f, cosf(a0) * 3.85f), i1(sinf(a1) * 3.85f, 0.01f, cosf(a1) * 3.85f);
+            uint32_t rc = RARITY_COL[CAR_INFO[car_sel].rarity];
+            rend.tri(i0, o0, o1, rc, true, true); rend.tri(i0, o1, i1, rc, true, true);
+        }
+        draw_car3d(rend, car_sel, Xf::make(V3(0, 0, 0), 0.0f), pcol, false, 0.0f);
+        rend.end(fb_);
+        return;
     }
-    c.vgrad(0, int(H * 0.835f + bob), W, int(H * 0.17f), rgb(30, 33, 44), rgb(7, 8, 11));
-    c.rect(0, int(H * 0.835f + bob), W, int(2 * S), rgb(70, 76, 96));
-    // dash cluster + steering wheel
-    float cx = W * 0.5f, cy = H * 0.99f + bob, R = H * 0.225f;
-    float rot = steer_vis * 1.25f;                                           // radians
-    c.ring(cx, cy, R - 20 * S, R, 0, 2 * PI_F, rgb(24, 26, 34));
-    c.ring(cx, cy, R - 4 * S, R, 0, 2 * PI_F, rgb(58, 62, 78));
-    c.ring(cx, cy, R - 20 * S, R - 16 * S, 0, 2 * PI_F, rgb(10, 11, 15));
-    float m0 = -PI_F * 0.5f + rot;                                             // red top marker
-    c.ring(cx, cy, R - 20 * S, R, m0 - 0.10f + 2 * PI_F, m0 + 0.10f + 2 * PI_F, rgb(230, 40, 50));
-    for (int k = 0; k < 3; k++) {                                              // spokes
-        float a = rot + k * PI_F * 0.5f + PI_F;
-        c.line(cx, cy, cx + cosf(a) * (R - 12 * S), cy + sinf(a) * (R - 12 * S), 22 * S, rgb(20, 22, 30));
+    float s_cam;
+    Camera cam;
+    cam.fov_deg = 64;
+    rend.threads = rend.threads;
+    if (race_scene) {
+        s_cam = s_;
+        V3 p = world.pos_at(s_, d_);
+        float hh = world.heading_at(s_) + yaw_, sl = world.slope_at(s_);
+        Xf pxf = Xf::make(p, hh, sl, -steer_vis * 0.03f);
+        V3 fwd(-sinf(hh), 0, -cosf(hh));
+        float sk = shake * 0.07f * sinf(race_t * 70.0f);
+        if (fpv) {
+            cam.pos = pxf.apply(V3(-0.45f, 1.52f + sk, 0.12f));
+            cam.yaw = hh; cam.pitch = sl - 0.02f; cam.roll = -steer_vis * 0.02f;
+            cam.fov_deg = 74 + speed * 0.12f;
+        } else {
+            float hr = world.heading_at(s_);
+            V3 f2(-sinf(hr * 0.5f + hh * 0.5f), 0, -cosf(hr * 0.5f + hh * 0.5f));
+            cam.pos = p - f2 * 7.4f + V3(0, 2.9f + sk, 0);
+            cam.yaw = hr * 0.5f + hh * 0.5f; cam.pitch = sl - 0.11f;
+            cam.fov_deg = 62 + speed * 0.16f;
+        }
+        rend.begin(cam, th.sky_top, th.sky_hor, th.fog, 70, 460);
+        world.draw(rend, cam, s_cam);
+        for (const Rival& r : rivals) {
+            V3 rp = world.pos_at(r.s, r.d);
+            Xf rx = Xf::make(rp, world.heading_at(r.s), world.slope_at(r.s));
+            draw_car3d(rend, r.model, rx, paint_rgb(r.paint), false, 0.0f);
+        }
+        draw_car3d(rend, car_sel, pxf, pcol, fpv, -steer_vis * 1.6f);
+        if (fpv) draw_hands(pxf, car_sel, -steer_vis * 1.6f);
+        rend.end(fb_);
+        return;
     }
-    c.circle(cx, cy, 44 * S, rgb(30, 33, 44));
-    c.circle(cx, cy, 30 * S, rgb(210, 40, 50));
-    for (int sd = -1; sd <= 1; sd += 2) {                                      // gloved hands at 10 and 2
-        float a = -PI_F * 0.5f + rot + sd * 0.98f;
-        float hx = cx + cosf(a) * (R - 10 * S), hy = cy + sinf(a) * (R - 10 * S);
-        c.rrect(hx - 26 * S, hy - 20 * S, 52 * S, 40 * S, 16 * S, rgb(52, 56, 70), rgb(20, 22, 30));
-        for (int f = 0; f < 4; f++) c.rrect(hx - 22 * S + f * 11.5f * S, hy - 24 * S, 9 * S, 16 * S, 4 * S, rgb(44, 48, 62));
-        c.rrect(hx - 10 * S, hy - 28 * S, 22 * S, 8 * S, 4 * S, argb(80, 255, 255, 255));
-    }
+    // menu background: the selected car cruising along the stage, seen from a low front-side angle
+    s_cam = demo_s + 20.0f;
+    float ds = fmodf(demo_s, std::max(100.0f, world.length() - 200.0f));
+    V3 p = world.pos_at(ds + 20.0f, 0);
+    float hh = world.heading_at(ds + 20.0f), sl = world.slope_at(ds + 20.0f);
+    Xf pxf = Xf::make(p, hh, sl);
+    V3 side = pxf.rot(V3(1, 0, 0)), fwd = pxf.rot(V3(0, 0, -1));
+    cam.pos = p + side * 5.6f - fwd * 8.5f + V3(0, 1.7f, 0);
+    V3 look = p + fwd * 3.0f + V3(0, 0.9f, 0);
+    V3 dv = look - cam.pos;
+    cam.yaw = atan2f(-dv.x, -dv.z); cam.pitch = atan2f(dv.y, sqrtf(dv.x * dv.x + dv.z * dv.z));
+    cam.fov_deg = 52;
+    rend.begin(cam, th.sky_top, th.sky_hor, th.fog, 70, 460);
+    world.draw(rend, cam, ds + 20.0f);
+    draw_car3d(rend, car_sel, pxf, pcol, false, 0.0f);
+    rend.end(fb_);
 }
 
 void Game::hud(Cv& c) {
@@ -632,21 +522,22 @@ void Game::hud(Cv& c) {
     c.text_sh(54 * S, 32 * S, 9.5f * S, rgb(255, 214, 70), b);
     c.text_sh(112 * S, 62 * S, 4.0f * S, rgb(220, 224, 236), "/ 6");
     c.text(112 * S, 38 * S, 2.6f * S, rgb(150, 160, 185), "POSITION");
-    // lap
-    snprintf(b, sizeof b, "LAP %d / %d", lap_, laps_total);
-    c.rrect(W * 0.5f - 105 * S, 22 * S, 210 * S, 46 * S, 23 * S, argb(170, 12, 16, 28), argb(170, 20, 24, 40));
-    c.text_sh(W * 0.5f, 33 * S, 3.6f * S, rgb(255, 255, 255), b, 1);
+    // stage + progress
+    c.rrect(W * 0.5f - 190 * S, 22 * S, 380 * S, 62 * S, 14 * S, argb(170, 12, 16, 28), argb(170, 20, 24, 40));
+    c.text_sh(W * 0.5f, 30 * S, 3.2f * S, rgb(255, 255, 255), world.name(), 1);
+    c.rrect(W * 0.5f - 160 * S, 62 * S, 320 * S, 8 * S, 4 * S, rgb(34, 40, 60));
+    c.rrect(W * 0.5f - 160 * S, 62 * S, std::max(8.0f * S, 320 * S * clampf(progress(), 0, 1)), 8 * S, 4 * S, rgb(255, 150, 40), rgb(255, 100, 30));
     // time
     snprintf(b, sizeof b, "%d:%02d.%d", int(race_t) / 60, int(race_t) % 60, int(race_t * 10) % 10);
     c.rrect(W - 236 * S, 22 * S, 210 * S, 84 * S, 10 * S, argb(170, 12, 16, 28), argb(170, 20, 24, 40));
     c.text(W - 222 * S, 32 * S, 2.6f * S, rgb(150, 160, 185), "TIME");
     c.text_sh(W - 222 * S, 56 * S, 5.4f * S, rgb(255, 255, 255), b);
     // hairpin warning
-    float ahead = upcoming_curve(2600);
-    if (fabsf(ahead) > 2.0f && (int(race_t * 4) & 1) == 0) {
+    float ahead = upcoming_curve(60.0f) * 0.5f + upcoming_curve(110.0f) * 0.5f;
+    if (fabsf(ahead) > 0.032f && (int(race_t * 4) & 1) == 0) {
         float cx = W * 0.5f, cy = 150 * S;
-        c.rrect(cx - 150 * S, cy - 34 * S, 300 * S, 68 * S, 12 * S, argb(215, 200, 24, 30), argb(215, 140, 10, 20));
-        c.text_sh(cx, cy - 14 * S, 4.6f * S, rgb(255, 255, 255), ahead > 0 ? "HAIRPIN >>" : "<< HAIRPIN", 1);
+        c.rrect(cx - 200 * S, cy - 34 * S, 400 * S, 68 * S, 12 * S, argb(215, 200, 24, 30), argb(215, 140, 10, 20));
+        c.text_sh(cx, cy - 14 * S, 4.6f * S, rgb(255, 255, 255), ahead < 0 ? "SHARP RIGHT >>" : "<< SHARP LEFT", 1);
     }
     // speedometer
     float gx = W - 190 * S, gy = H - 170 * S, gr = 124 * S;
@@ -672,19 +563,19 @@ void Game::hud(Cv& c) {
     float mx = 36 * S, my = H - 214 * S, ms = 170 * S;
     c.rrect(mx - 12 * S, my - 12 * S, ms + 24 * S, ms + 24 * S, 14 * S, argb(165, 10, 14, 26));
     int np = (int)mm_x.size();
-    for (int i = 0; i < np; i++) { int j = (i + 1) % np; c.line(mx + mm_x[i] * ms, my + mm_y[i] * ms, mx + mm_x[j] * ms, my + mm_y[j] * ms, 4.5f * S, rgb(70, 78, 104)); }
-    auto at = [&](float zz, float& x, float& y) { float u = fmodf(zz, track_len) / track_len; if (u < 0) u += 1; int i = int(u * np) % np; x = mx + mm_x[i] * ms; y = my + mm_y[i] * ms; };
-    for (auto& r : rivals) { float x, y; at(r.z, x, y); c.circle(x, y, 4.5f * S, rgb(PAINTS[r.paint].r, PAINTS[r.paint].g, PAINTS[r.paint].b)); }
-    { float x, y; at(z, x, y); c.circle(x, y, 8 * S, argb(130, 255, 255, 255)); c.circle(x, y, 5.5f * S, rgb(255, 60, 70)); }
+    for (int i = 0; i + 1 < np; i++) c.line(mx + mm_x[i] * ms, my + mm_y[i] * ms, mx + mm_x[i + 1] * ms, my + mm_y[i + 1] * ms, 4.5f * S, rgb(70, 78, 104));
+    auto at = [&](float sm, float& x, float& y) { int i = int(sm / 15.0f); if (i < 0) i = 0; if (i >= np) i = np - 1; x = mx + mm_x[i] * ms; y = my + mm_y[i] * ms; };
+    for (auto& r : rivals) { float x, y; at(r.s, x, y); c.circle(x, y, 4.5f * S, rgb(PAINTS[r.paint].r, PAINTS[r.paint].g, PAINTS[r.paint].b)); }
+    { float x, y; at(s_, x, y); c.circle(x, y, 8 * S, argb(130, 255, 255, 255)); c.circle(x, y, 5.5f * S, rgb(255, 60, 70)); }
     // speed streaks
-    if (kmh > 120) {
+    if (kmh > 130) {
         int cnt = 14;
         for (int i = 0; i < cnt; i++) {
             uint32_t h = hash32(uint32_t(i) + uint32_t(race_t * 22.0f) * 131u);
             float ang = (hf(h) * 2 - 1) * 1.1f + (hf(h + 1) < 0.5f ? 0.0f : PI_F);
             float r0 = (0.34f + 0.12f * hf(h + 2)) * W, r1 = r0 + (0.07f + 0.09f * hf(h + 3)) * W;
             float cx = W * 0.5f, cy = H * 0.5f;
-            c.line(cx + cosf(ang) * r0, cy + sinf(ang) * r0 * 0.6f, cx + cosf(ang) * r1, cy + sinf(ang) * r1 * 0.6f, 1.6f * S, argb(int(clampf((kmh - 120) / 100.0f, 0, 1) * 70), 255, 255, 255));
+            c.line(cx + cosf(ang) * r0, cy + sinf(ang) * r0 * 0.6f, cx + cosf(ang) * r1, cy + sinf(ang) * r1 * 0.6f, 1.6f * S, argb(int(clampf((kmh - 130) / 100.0f, 0, 1) * 70), 255, 255, 255));
         }
     }
 }
@@ -702,11 +593,7 @@ void Game::garage_screen(Cv& c) {
     const CarInfo& ci = CAR_INFO[car_sel];
     c.text_sh(90 * S, 52 * S, 8.0f * S, rgb(255, 255, 255), "GARAGE");
     c.rrect(84 * S, 52 * S + 64 * S, 120 * S, 5 * S, 2 * S, rgb(255, 120, 30));
-    // showroom
-    float cx = W * 0.62f, floor_y = H * 0.56f;
-    c.rrect(cx - 360 * S, floor_y - 30 * S, 720 * S, 90 * S, 45 * S, argb(150, 12, 14, 24), argb(150, 30, 34, 52));
-    c.rrect(cx - 330 * S, floor_y - 18 * S, 660 * S, 8 * S, 4 * S, (uint32_t(RARITY_COL[ci.rarity]) & 0x00FFFFFFu) | 0xB4000000u);
-    draw_sprite(c, car_sel, cx, floor_y + 6 * S, 400 * S, paint_sel, 0.0f, 0, 0.0f);
+    float cx = W * 0.62f;
     char b[64];
     snprintf(b, sizeof b, "< %s >", ci.name);
     float ry = H * 0.665f;
@@ -745,7 +632,7 @@ void Game::overlay(Cv& c) {
     const int W = c.W, H = c.H;
     const float S = c.S;
     char b[64];
-    if (state == GARAGE) { c.rect(0, 0, W, H, argb(205, 6, 8, 16)); garage_screen(c); return; }
+    if (state == GARAGE) { garage_screen(c); return; }
     bool menu_like = state == MENU || state == PAUSED || state == CONTROLS;
     if (menu_like) {
         c.rect(0, 0, W, H, argb(state == MENU ? 120 : 175, 6, 8, 16));
@@ -763,7 +650,7 @@ void Game::overlay(Cv& c) {
         int n;
         if (state == MENU) {
             snprintf(qb, sizeof qb, "GRAPHICS:  < %s >", QN[quality]);
-            snprintf(lb, sizeof lb, "LAPS:  < %d >", laps_total);
+            snprintf(lb, sizeof lb, "STAGE:  < %s >", STAGES[stage_sel].name);
             mi[0] = "START RACE"; mi[1] = "GARAGE"; mi[2] = "CONTROLS"; mi[3] = qb; mi[4] = show_fps ? "FPS COUNTER:  ON" : "FPS COUNTER:  OFF"; mi[5] = lb; mi[6] = fpv ? "CAMERA:  FIRST PERSON" : "CAMERA:  CHASE"; n = 7;
         } else { mi[0] = "RESUME"; mi[1] = "RESTART"; mi[2] = "CONTROLS"; mi[3] = "MAIN MENU"; n = 4; }
         float y0 = 246 * S;
@@ -831,11 +718,12 @@ void Game::overlay(Cv& c) {
     if (show_fps) { snprintf(b, sizeof b, "%d FPS  %dP", int(fps + 0.5f), render_h()); c.text_sh(W * 0.5f, H - 28 * S, 2.6f * S, rgb(120, 255, 160), b, 1); }
 }
 
+
 void Game::render(uint32_t* fb) {
+    fb_ = fb;
+    scene3d(0);
     Cv c{fb, render_w(), render_h(), render_h() / 720.0f};
     bool race_scene = state == RACE || state == COUNTDOWN || state == FINISH || state == PAUSED || (state == CONTROLS && ctl_return == PAUSED);
-    if (race_scene) scene(c, z, px, true); else scene(c, demo_z, 0.0f, false);
-    if (race_scene && fpv) cockpit(c);
     if (race_scene) hud(c);
     overlay(c);
 }

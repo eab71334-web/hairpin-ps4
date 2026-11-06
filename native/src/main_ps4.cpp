@@ -48,6 +48,7 @@ int main() {
     int pad = scePadOpen(userId, 0, 0, nullptr);
 
     Game game;
+    game.set_threads(6);                                        // the PS4 has 8 Jaguar cores (6-7 usable by a game)
     load_cfg(game);
     std::vector<uint32_t> fb;
     uint32_t last = SDL_GetTicks();

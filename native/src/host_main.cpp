@@ -87,38 +87,41 @@ int main(int argc, char** argv) {
     CHECK(g.state == Game::RACE, "countdown ends");
     shot(g, out, "countdown");
     int shots = 0;
-    for (int f = 0; f < 60 * 60 * 6 && !g.finished(); f++) {
-        float c1 = g.upcoming_curve(600), c2 = g.upcoming_curve(2500);
+    for (int f = 0; f < 60 * 240 && !g.finished(); f++) {
+        float v = g.speed_kmh() / 3.6f;
+        float cmax = 0;
+        for (float m = 8; m <= 70; m += 6) cmax = std::max(cmax, fabsf(g.upcoming_curve(m)));
+        float vt = cmax > 1e-3f ? sqrtf(8.5f / cmax) : 80.0f;
         PadState p;
-        bool gas = !(fabsf(c2) > 2.0f && g.speed_kmh() > 95);
-        bool brk = fabsf(c2) > 2.0f && g.speed_kmh() > 105;
-        if (fabsf(c1) < 2.0f && g.speed_kmh() > 140 && fabsf(c2) < 2.0f && (f & 3) == 0) gas = false;
+        bool gas = v < vt + 1.0f, brk = v > vt + 4.0f;
         if (gas) p.down |= g.binding(A_GAS);
         if (brk) p.l2 = 1.0f;
-        float s = -g.player_x() * 1.2f + c1 * 0.5f * (g.speed_kmh() / 220.0f);
-        p.lx = s < -1 ? -1 : (s > 1 ? 1 : s);
+        float auth = 1.7f / (1.0f + v / 38.0f);
+        float st = -g.upcoming_curve(2.0f) * v / auth + 0.12f * g.lateral() + 1.1f * g.yaw_dbg();
+        p.lx = st < -1 ? -1 : (st > 1 ? 1 : st);
         g.update(dt, p);
-        if ((f == 300 || f == 1100 || f == 1900 || f == 2700) && shots < 4) {
+        if ((f == 700 || f == 1500 || f == 2300 || f == 3000) && shots < 4) {
             char n[32]; snprintf(n, sizeof n, "race%d", shots++); shot(g, out, n);
-            printf("   shot f=%d kmh=%.0f lap=%d pos=%d x=%.2f\n", f, g.speed_kmh(), g.lap(), g.place(), g.player_x());
+            printf("   shot f=%d kmh=%.0f prog=%.0f%% pos=%d d=%.1f tris=%zu\n", f, g.speed_kmh(), g.progress() * 100, g.place(), g.lateral(), g.last_tri_count());
         }
         if (f == 900) { bool was = g.first_person(); shot(g, out, "cockpit"); tap(g, g.binding(A_CAMERA)); CHECK(g.first_person() != was, "camera button toggles view"); shot(g, out, "chase"); tap(g, g.binding(A_CAMERA)); CHECK(g.first_person() == was, "camera toggles back"); }
-        if (f == 1500) { tap(g, g.binding(A_PAUSE)); CHECK(g.state == Game::PAUSED, "pause opens"); shot(g, out, "pause"); tap(g, B_CROSS); CHECK(g.state == Game::RACE, "resume works"); }
+        if (f == 1800) { tap(g, g.binding(A_PAUSE)); CHECK(g.state == Game::PAUSED, "pause opens"); shot(g, out, "pause"); tap(g, B_CROSS); CHECK(g.state == Game::RACE, "resume works"); }
     }
-    CHECK(g.finished(), "race finishes (3 laps)");
+    printf("   finished=%d prog=%.0f%% time=%.1f s pos=%d\n", g.finished(), g.progress() * 100, g.time_s(), g.place());
+    CHECK(g.finished(), "stage finishes with the scripted driver");
     CHECK(Game().first_person(), "first-person camera is the default");
     for (int i = 0; i < 120; i++) { PadState p; g.update(dt, p); }
     shot(g, out, "finish");
     // --- timing of one frame at each internal resolution (host CPU; the PS4 Jaguar CPU is several times slower)
-    for (int q = 0; q < 3; q++) {
-        Game t; t.set_quality(q); t.menu_sel = 0; tap(t, B_CROSS);
+    for (int thr = 1; thr <= 2; thr++) for (int q = 0; q < 3; q++) {
+        Game t; t.set_quality(q); t.set_threads(thr); t.menu_sel = 0; tap(t, B_CROSS);
         for (int i = 0; i < 400; i++) { PadState p; p.down = B_R2; p.r2 = 1; t.update(dt, p); }
         std::vector<uint32_t> fb(t.render_w() * t.render_h());
         t.render(fb.data());
         auto t0 = std::chrono::steady_clock::now();
         for (int i = 0; i < 20; i++) t.render(fb.data());
         double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / 20;
-        printf("TIME %dx%d : %.2f ms/frame (host)\n", t.render_w(), t.render_h(), ms);
+        printf("TIME %dx%d threads=%d : %.2f ms/frame (host) tris=%zu\n", t.render_w(), t.render_h(), thr, ms, t.last_tri_count());
     }
     printf("%s (%d failures)\n", fails ? "FAILED" : "ALL PASSED", fails);
     return fails ? 1 : 0;

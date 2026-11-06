@@ -32,7 +32,7 @@ jobs:
       - name: Host test (game logic + software renderer, no console needed)
         run: |
           cd native/src
-          g++ -O2 -std=c++17 -Wall -o /tmp/host_test game.cpp sprites_data.cpp host_main.cpp
+          g++ -O2 -std=c++17 -Wall -pthread -o /tmp/host_test game.cpp r3d.cpp world3d.cpp world_data.cpp host_main.cpp
           mkdir -p /tmp/shots && /tmp/host_test /tmp/shots
 
       - name: Download OpenOrbis toolchain
@@ -57,7 +57,7 @@ jobs:
           S="$OO_PS4_TOOLCHAIN/samples"; N=HairpinRush; BUILD=${{ github.run_number }}; VER=$(printf "01.%02d" $((BUILD % 100)))
           rm -rf "$S/$N"; cp -r "$S/hello_world" "$S/$N"
           rm -rf "$S/$N/hello_world"; mkdir -p "$S/$N/$N"
-          cp native/src/*.h native/src/game.cpp native/src/sprites_data.cpp native/src/main_ps4.cpp "$S/$N/$N/"
+          cp native/src/*.h native/src/game.cpp native/src/r3d.cpp native/src/world3d.cpp native/src/world_data.cpp native/src/main_ps4.cpp "$S/$N/$N/"
           # icon (512x512) and background (1920x1080) wherever the sample keeps them
           for f in icon0.png pic0.png; do
             for d in $(find "$S/$N" -type d -name sce_sys); do cp "assets/sce_sys/$f" "$d/$f"; done
@@ -67,7 +67,7 @@ jobs:
             sed -i "s/^VERSION .*/VERSION     := $VER/" Makefile
             # identity: homebrew title id / content id of OUR OWN (never a real game's id)
             sed -i "s/BREW00[0-9]*/BREW00791/g; s/IV0000-BREW00791_00-[A-Z0-9]*/IV0000-BREW00791_00-HAIRPINRUSH00000/; s/^TITLE .*/TITLE       := Hairpin Rush/" Makefile
-            make
+            make || { echo '::warning::build with threads failed - retrying single-threaded'; rm -rf HairpinRush/x64; sed -i 's|-DBUILD_ID|-DHR_NO_THREADS -DBUILD_ID|' Makefile; make; }
             cp ./*.pkg "$GITHUB_WORKSPACE/HairpinRush.pkg"; cp ./*.pkg "$GITHUB_WORKSPACE/HairpinRush-b$BUILD.pkg" )
           ls -la "$GITHUB_WORKSPACE"/*.pkg
 
