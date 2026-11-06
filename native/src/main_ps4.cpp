@@ -150,7 +150,11 @@ int main(int, char**) {
     for (;;) {
         PadState ps; ps.down = 0; ps.lx = ps.ly = ps.l2 = ps.r2 = 0;
         OrbisPadData d; memset(&d, 0, sizeof d);
-        if (pad >= 0 && scePadReadState(pad, &d) == 0) {
+        if (pad < 0) pad = scePadOpen(userId, 0, 0, NULL);      // retry until the pad opens
+        int rr = (pad >= 0) ? scePadReadState(pad, &d) : -1;    // the war project ignores the return code: use the data regardless
+        { static uint32_t lastB = 0xFFFFFFFFu; static int n = 0;
+          if ((d.buttons != lastB) && n < 30) { lastB = d.buttons; n++; blog("pad ret=0x%x btn=%05X LS %d,%d RS %d,%d L2 %d R2 %d", (unsigned)rr, (unsigned)d.buttons, d.leftStick.x, d.leftStick.y, d.rightStick.x, d.rightStick.y, d.analogButtons.l2, d.analogButtons.r2); } }
+        if (pad >= 0) {
             uint32_t b = d.buttons, o = 0;
             if (b & ORBIS_PAD_BUTTON_CROSS) o |= B_CROSS;
             if (b & ORBIS_PAD_BUTTON_CIRCLE) o |= B_CIRCLE;
