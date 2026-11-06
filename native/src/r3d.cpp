@@ -41,6 +41,7 @@ void Renderer::begin(const Camera& cam, uint32_t sky_top, uint32_t sky_horizon, 
     horizon_ = cyc_ - f_ * tanf(cam.pitch);                                         // screen row of the horizon (pitch up = horizon lower)
     horizon_ = cyc_ + f_ * tanf(cam.pitch);
     tris.clear(); nt = 0;
+    gv_.clear(); gz_.clear();
 }
 
 static inline uint32_t mix_rgb(uint32_t a, uint32_t b, float t) {
@@ -49,6 +50,16 @@ static inline uint32_t mix_rgb(uint32_t a, uint32_t b, float t) {
 }
 
 void Renderer::emit(const V3& a, const V3& b, const V3& c, uint32_t col) {
+    if (gpu) {                                                                      // GPU path: keep the view-space triangle, colour -> palette UV (7/7/6 bits)
+        int r7 = (((col >> 16) & 255) * 127 + 127) / 255, g7 = (((col >> 8) & 255) * 127 + 127) / 255, b6 = ((col & 255) * 63 + 127) / 255;
+        int idx = (r7 << 13) | (g7 << 6) | b6;
+        float u = ((idx & 1023) + 0.5f) / 1024.0f, v = ((idx >> 10) + 0.5f) / 1024.0f;
+        const V3* p[3] = {&a, &b, &c};
+        for (int i = 0; i < 3; i++) { gv_.push_back(p[i]->x); gv_.push_back(p[i]->y); gv_.push_back(p[i]->z); gv_.push_back(u); gv_.push_back(v); }
+        gz_.push_back(-(a.z + b.z + c.z) * (1.0f / 3.0f));
+        nt++;
+        return;
+    }
     ST s;
     s.x0 = cx_ + f_ * a.x / -a.z; s.y0 = cyc_ - f_ * a.y / -a.z; s.z0 = 1.0f / -a.z;
     s.x1 = cx_ + f_ * b.x / -b.z; s.y1 = cyc_ - f_ * b.y / -b.z; s.z1 = 1.0f / -b.z;
@@ -154,6 +165,7 @@ void Renderer::raster_band(int by0, int by1, uint32_t* fb) {
 }
 
 void Renderer::end(uint32_t* fb) {
+    if (gpu) { std::fill(fb, fb + size_t(W) * H, 0u); return; }          // 3D goes to the GPU; fb becomes the transparent 2D layer
     int T = std::max(1, threads);
 #if defined(HR_NO_THREADS)
     T = 1;

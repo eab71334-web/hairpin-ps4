@@ -52,6 +52,14 @@ public:
     int w() const { return W; }
     int h() const { return H; }
     int threads = 4;
+    // GPU mode: instead of rasterizing, collect view-space triangles (palette-UV encoded colour) for the console GPU; end() just clears fb to transparent.
+    bool gpu = false;
+    const std::vector<float>& gpu_verts() const { return gv_; }   // 5 floats per vertex: x,y,z (view space), u,v (palette); 3 vertices per triangle
+    const std::vector<float>& gpu_depth() const { return gz_; }   // per triangle: view-space distance of the centroid (for painter sorting when no depth buffer)
+    float focal() const { return f_; }
+    uint32_t sky_top() const { return skyt_; }
+    uint32_t sky_horizon() const { return skyh_; }
+    uint32_t fog_colour() const { return fogc_; }
     size_t tri_count() const { return nt; }
     V3 sun = norm(V3(-0.45f, 0.8f, 0.4f));
     V3 cam_pos() const { return cam_.pos; }
@@ -70,4 +78,5 @@ private:
     float fog0_ = 50, fog1_ = 400;
     float near_ = 0.15f;
     V3 to_view(const V3& p) const;
+    std::vector<float> gv_, gz_;
 };

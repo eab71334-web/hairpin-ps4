@@ -112,6 +112,49 @@ int main(int argc, char** argv) {
     CHECK(Game().first_person(), "first-person camera is the default");
     for (int i = 0; i < 120; i++) { PadState p; g.update(dt, p); }
     shot(g, out, "finish");
+    // --- GPU mode: 3D collected as view-space triangles + palette UVs; fb becomes a transparent 2D layer. Emulate the GPU on the CPU to check the data.
+    {
+        Game t; t.set_quality(1); t.set_threads(1); t.menu_sel = 0; tap(t, B_CROSS);
+        for (int i = 0; i < 400; i++) { PadState p; p.down = B_R2; p.r2 = 1; t.update(dt, p); }
+        t.renderer().gpu = true;
+        int W = t.render_w(), H = t.render_h();
+        std::vector<uint32_t> fb(W * H, 0xDEADBEEFu);
+        t.render(fb.data());
+        const std::vector<float>& gv = t.renderer().gpu_verts();
+        size_t ntri = gv.size() / 15;
+        CHECK(ntri > 500, "gpu mode: 3D triangles collected for the GPU");
+        bool uvok = true; for (size_t i = 0; i < gv.size(); i += 5) if (gv[i + 3] < 0 || gv[i + 3] > 1 || gv[i + 4] < 0 || gv[i + 4] > 1 || gv[i + 2] >= 0) uvok = false;
+        CHECK(uvok, "gpu mode: palette UVs in range and vertices in front of the camera");
+        size_t transparent = 0; for (uint32_t p : fb) if (p == 0) transparent++;
+        CHECK(transparent > fb.size() / 2, "gpu mode: 2D layer is mostly transparent (3D not rasterized on the CPU)");
+        // emulate: sky gradient, then triangles with z-buffer, then the premultiplied 2D layer
+        Renderer& R = t.renderer(); float f = R.focal();
+        std::vector<uint32_t> img(W * H); std::vector<float> zb(W * H, 0.f);
+        auto mixc = [](uint32_t a, uint32_t b, float k) { int o = 0; for (int s = 0; s <= 16; s += 8) { int x = (a >> s) & 255, y = (b >> s) & 255; o |= int(x + (y - x) * k) << s; } return 0xFF000000u | o; };
+        for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) { float k = float(y) / H; img[y * W + x] = mixc(R.sky_top(), R.sky_horizon(), k < 0.5f ? k * 2 : 1.f); }
+        for (size_t i = 0; i < ntri; i++) {
+            const float* v = &gv[i * 15];
+            float X[3], Y[3], Z[3];
+            for (int k = 0; k < 3; k++) { Z[k] = -v[k * 5 + 2]; X[k] = W * 0.5f + f * v[k * 5] / Z[k]; Y[k] = H * 0.5f - f * v[k * 5 + 1] / Z[k]; }
+            int idx = int(v[4] * 1024) * 1024 + int(v[3] * 1024);
+            int r7 = (idx >> 13) & 127, g7 = (idx >> 6) & 127, b6 = idx & 63;
+            uint32_t col = 0xFF000000u | (uint32_t(b6 * 255 / 63) << 0) | (uint32_t(g7 * 255 / 127) << 8) | (uint32_t(r7 * 255 / 127) << 16);
+            int x0 = std::max(0, int(std::min(X[0], std::min(X[1], X[2])))), x1 = std::min(W - 1, int(std::max(X[0], std::max(X[1], X[2]))) + 1);
+            int y0 = std::max(0, int(std::min(Y[0], std::min(Y[1], Y[2])))), y1 = std::min(H - 1, int(std::max(Y[0], std::max(Y[1], Y[2]))) + 1);
+            float den = (Y[1] - Y[2]) * (X[0] - X[2]) + (X[2] - X[1]) * (Y[0] - Y[2]); if (fabsf(den) < 1e-6f) continue;
+            for (int y = y0; y <= y1; y++) for (int x = x0; x <= x1; x++) {
+                float px = x + 0.5f, py = y + 0.5f;
+                float a = ((Y[1] - Y[2]) * (px - X[2]) + (X[2] - X[1]) * (py - Y[2])) / den, b = ((Y[2] - Y[0]) * (px - X[2]) + (X[0] - X[2]) * (py - Y[2])) / den, c = 1 - a - b;
+                if (a < 0 || b < 0 || c < 0) continue;
+                float iz = a / Z[0] + b / Z[1] + c / Z[2];
+                if (iz > zb[y * W + x]) { zb[y * W + x] = iz; img[y * W + x] = col; }
+            }
+        }
+        for (int i = 0; i < W * H; i++) { uint32_t p = fb[i]; int a = p >> 24; if (!a) continue; uint32_t d = img[i]; int ia = 255 - a;
+            int r = ((p >> 16) & 255) + (((d >> 16) & 255) * ia) / 255, g = ((p >> 8) & 255) + (((d >> 8) & 255) * ia) / 255, b = (p & 255) + ((d & 255) * ia) / 255;
+            img[i] = 0xFF000000u | (std::min(255, r) << 16) | (std::min(255, g) << 8) | std::min(255, b); }
+        if (out) { char path[512]; snprintf(path, sizeof path, "%s/gpu_emulated_race.ppm", out); FILE* fp = fopen(path, "wb"); if (fp) { fprintf(fp, "P6\n%d %d\n255\n", W, H); for (int i = 0; i < W * H; i++) { uint8_t c[3] = {uint8_t(img[i] >> 16), uint8_t(img[i] >> 8), uint8_t(img[i])}; fwrite(c, 1, 3, fp); } fclose(fp); } }
+    }
     // --- timing of one frame at each internal resolution (host CPU; the PS4 Jaguar CPU is several times slower)
     for (int thr = 1; thr <= 2; thr++) for (int q = 0; q < 3; q++) {
         Game t; t.set_quality(q); t.set_threads(thr); t.menu_sel = 0; tap(t, B_CROSS);

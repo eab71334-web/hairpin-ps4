@@ -23,6 +23,7 @@ public:
     void set_quality(int q) { quality = q < 0 ? 0 : (q > 2 ? 2 : q); dirty = true; }
     int get_quality() const { return quality; }
     void set_threads(int n) { rend.threads = n < 1 ? 1 : n; }
+    Renderer& renderer() { return rend; }       // GPU mode: main_ps4 draws the collected 3D triangles with the console GPU
     uint32_t binding(int a) const { return bind[a]; }
     std::string save_blob() const;             // settings -> text (platform stores it in /data)
     void load_blob(const std::string& s);

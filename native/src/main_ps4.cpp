@@ -15,6 +15,7 @@
 #include <orbis/UserService.h>
 #include <cmath>
 #include <stdlib.h>
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -59,6 +60,7 @@ static bool fetchSh(const char* n, unsigned char*& p, uint64_t& l) {
 
 static EGLDisplay gD = EGL_NO_DISPLAY; static EGLSurface gS = EGL_NO_SURFACE; static EGLContext gC = EGL_NO_CONTEXT;
 static GLuint gTex = 0, gProg = 0;
+static int gDepthBits = 0;
 static GLint uMV = -1, uPR = -1, uTS = -1, uSam = -1, uOp = -1, aV = -1;
 
 static bool glInit() {
@@ -85,8 +87,16 @@ static bool glInit() {
     gD = eglGetDisplay(EGL_DEFAULT_DISPLAY); if (gD == EGL_NO_DISPLAY) { blog("no display"); return false; }
     if (!eglInitialize(gD, &maj, &mi)) { blog("egl init fail 0x%x", eglGetError()); return false; }
     eglBindAPI(EGL_OPENGL_ES_API); eglSwapInterval(gD, 0);   // interval 1 blocks forever in Piglet (frozen picture); we pace frames ourselves
-    if (!eglChooseConfig(gD, at, &cfg, 1, &nc) || nc < 1) { blog("choose cfg fail"); return false; }
-    gS = eglCreateWindowSurface(gD, cfg, &w, wa); if (gS == EGL_NO_SURFACE) { blog("surface fail 0x%x", eglGetError()); return false; }
+    const int dl[3] = {24, 16, 0};                              // ask for a depth buffer (the GPU draws the 3D scene); fall back to none
+    for (int di = 0; di < 3 && gS == EGL_NO_SURFACE; di++) {
+        at[9] = dl[di]; nc = 0;
+        if (!eglChooseConfig(gD, at, &cfg, 1, &nc) || nc < 1) { blog("choose cfg fail depth %d", dl[di]); continue; }
+        gS = eglCreateWindowSurface(gD, cfg, &w, wa);
+        if (gS == EGL_NO_SURFACE) { blog("surface fail depth %d 0x%x", dl[di], eglGetError()); continue; }
+        EGLint gotD = -1; eglGetConfigAttrib(gD, cfg, EGL_DEPTH_SIZE, &gotD); gDepthBits = gotD;
+        blog("config chosen: requested depth %d got %d", dl[di], (int)gotD);
+    }
+    if (gS == EGL_NO_SURFACE) { blog("no usable surface"); return false; }
     gC = eglCreateContext(gD, cfg, EGL_NO_CONTEXT, ca); if (gC == EGL_NO_CONTEXT) { blog("ctx fail 0x%x", eglGetError()); return false; }
     if (!eglMakeCurrent(gD, gS, gS, gC)) { blog("makecurrent fail 0x%x", eglGetError()); return false; }
     blog("GL %s | %s", (const char*)glGetString(GL_VERSION), (const char*)glGetString(GL_RENDERER));
@@ -106,10 +116,80 @@ static bool glInit() {
     return true;
 }
 
+
+// ---- 3D scene on the GPU: Sony's precompiled "trilithium" textured shader. Colours are palette lookups (UV into a 1024x1024 colour cube).
+static GLuint gpPg = 0, gpPal = 0, gpSky = 0; static GLint gpVP = -1, gpM = -1, gpSam = -1, gpaP = -1, gpaT = -1;
+static bool gpuInit() {
+    unsigned char *vp, *fp; uint64_t vl, fl;
+    if (!fetchSh("trilithium/vpBasic.vert", vp, vl) || !fetchSh("trilithium/fpTexture.frag", fp, fl)) { blog("gpu: trilithium shaders missing"); return false; }
+    GLuint vs = glCreateShader(GL_VERTEX_SHADER), fs = glCreateShader(GL_FRAGMENT_SHADER); gpPg = glCreateProgram();
+    glShaderBinary(1, &vs, 0, vp, vl); glShaderBinary(1, &fs, 0, fp, fl); glAttachShader(gpPg, vs); glAttachShader(gpPg, fs); glLinkProgram(gpPg);
+    GLint ok = 0, nu = 0; glGetProgramiv(gpPg, GL_LINK_STATUS, &ok); glGetProgramiv(gpPg, GL_ACTIVE_UNIFORMS, &nu);
+    for (int i = 0; i < nu && i < 16; i++) { char nm[64]; GLsizei l = 0; GLint sz = 0; GLenum ty = 0; glGetActiveUniform(gpPg, i, 64, &l, &sz, &ty, nm); GLint loc = glGetUniformLocation(gpPg, nm); if (ty == 0x8B5E) gpSam = loc; }
+    gpVP = glGetUniformLocation(gpPg, "uVPMatrix"); gpM = glGetUniformLocation(gpPg, "uMMatrix");
+    gpaP = glGetAttribLocation(gpPg, "aPosition"); gpaT = glGetAttribLocation(gpPg, "aTextureCoord");
+    blog("gpu: link ok=%d uniforms=%d VP%d M%d sampler%d aP%d aT%d", (int)ok, (int)nu, (int)gpVP, (int)gpM, (int)gpSam, (int)gpaP, (int)gpaT);
+    if (gpVP < 0 || gpaP < 0 || gpaT < 0) return false;
+    static std::vector<uint32_t> pal(1024 * 1024);
+    for (int i = 0; i < 1024 * 1024; i++) { int r7 = (i >> 13) & 127, g7 = (i >> 6) & 127, b6 = i & 63; pal[i] = 0xFF000000u | ((uint32_t)(b6 * 255 / 63) << 16) | ((uint32_t)(g7 * 255 / 127) << 8) | (uint32_t)(r7 * 255 / 127); }
+    glGenTextures(1, &gpPal); glBindTexture(GL_TEXTURE_2D, gpPal); glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1024, 1024, 0, GL_RGBA, GL_UNSIGNED_BYTE, pal.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glGenTextures(1, &gpSky); glBindTexture(GL_TEXTURE_2D, gpSky);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    blog("gpu: init done err=0x%x depthBits=%d", (unsigned)glGetError(), gDepthBits);
+    return true;
+}
+static void gpuDraw(const float* v, size_t nv, const float* vp) {
+    static const float ID[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    glUniformMatrix4fv(gpVP, 1, GL_FALSE, vp); if (gpM >= 0) glUniformMatrix4fv(gpM, 1, GL_FALSE, ID);
+    for (size_t o = 0; o < nv; o += 60000) { size_t c = std::min<size_t>(60000, nv - o); c -= c % 3; if (!c) break;
+        glVertexAttribPointer(gpaP, 3, GL_FLOAT, GL_FALSE, 20, v + o * 5); glVertexAttribPointer(gpaT, 2, GL_FLOAT, GL_FALSE, 20, v + o * 5 + 3); glDrawArrays(GL_TRIANGLES, 0, (GLsizei)c); }
+}
+static void gpuScene(Renderer& r, int w, int h, int frame) {
+    for (int i = 0; i < 8; i++) glDisableVertexAttribArray(i);
+    glViewport(0, 0, OUT_W, OUT_H); glDisable(GL_BLEND); glDisable(GL_CULL_FACE); glDepthMask(GL_TRUE);
+    glClearColor(0.05f, 0.06f, 0.1f, 1.f); glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glUseProgram(gpPg); glActiveTexture(GL_TEXTURE0); if (gpSam >= 0) glUniform1i(gpSam, 0);
+    glEnableVertexAttribArray(gpaP); glEnableVertexAttribArray(gpaT);
+    // sky: a small vertical gradient texture (same colours the CPU path used) on a full-screen quad
+    { const int SKN = 128; static uint8_t sk[SKN * 4 * 4];
+      uint32_t st = r.sky_top(), sh = r.sky_horizon(), fg = r.fog_colour();
+      float hy = r.horizon_y();
+      for (int j = 0; j < SKN; j++) { float y = (j + 0.5f) / SKN * h; uint32_t c;
+        if (y < hy) { float t = hy > 1 ? y / hy : 1.f; float k = std::min(1.f, t * t * 0.4f + t * 0.6f); int rr = ((st >> 16) & 255), gg = ((st >> 8) & 255), bb = (st & 255); rr += (int)((((sh >> 16) & 255) - rr) * k); gg += (int)((((sh >> 8) & 255) - gg) * k); bb += (int)(((sh & 255) - bb) * k); c = (rr << 16) | (gg << 8) | bb; }
+        else c = fg;
+        for (int i = 0; i < 4; i++) { uint8_t* q = &sk[(j * 4 + i) * 4]; q[0] = (c >> 16) & 255; q[1] = (c >> 8) & 255; q[2] = c & 255; q[3] = 255; } }
+      glBindTexture(GL_TEXTURE_2D, gpSky); glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 4, SKN, 0, GL_RGBA, GL_UNSIGNED_BYTE, sk);
+      static const float ID[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+      static const float Q[] = {-1, -1, 0, 0, 1, 1, -1, 0, 1, 1, 1, 1, 0, 1, 0, -1, -1, 0, 0, 1, 1, 1, 0, 1, 0, -1, 1, 0, 0, 0};
+      glDisable(GL_DEPTH_TEST); gpuDraw(Q, 6, ID); }
+    // triangles
+    const std::vector<float>& gv = r.gpu_verts(); size_t nv = gv.size() / 5;
+    static std::vector<float> sorted;
+    const float* src = gv.data();
+    if (gDepthBits > 0) { glEnable(GL_DEPTH_TEST); glDepthFunc(GL_LEQUAL); }
+    else {                                                              // no depth buffer: painter's algorithm, far to near
+        glDisable(GL_DEPTH_TEST);
+        const std::vector<float>& gz = r.gpu_depth(); size_t nt = gz.size();
+        static std::vector<uint32_t> ord; ord.resize(nt); for (size_t i = 0; i < nt; i++) ord[i] = (uint32_t)i;
+        std::sort(ord.begin(), ord.end(), [&](uint32_t a, uint32_t b) { return gz[a] > gz[b]; });
+        sorted.resize(gv.size()); for (size_t i = 0; i < nt; i++) memcpy(&sorted[i * 15], &gv[(size_t)ord[i] * 15], 15 * sizeof(float));
+        src = sorted.data();
+    }
+    float f = r.focal(), n = 0.15f, fa = 1500.f; float P[16] = {0};
+    P[0] = 2.f * f / w; P[5] = 2.f * f / h; P[10] = (fa + n) / (n - fa); P[11] = -1; P[14] = 2.f * fa * n / (n - fa);
+    glBindTexture(GL_TEXTURE_2D, gpPal);
+    gpuDraw(src, nv, P);
+    if (frame < 3 || frame % 600 == 0) blog("gpuScene %d tris %d err=0x%x", frame, (int)(nv / 3), (unsigned)glGetError());
+    for (int i = 0; i < 8; i++) glDisableVertexAttribArray(i);
+}
+
 // Upload the CPU frame (RGBA, w x h) as a texture and let the GPU draw it full-screen (bilinear upscale to 1080p).
 static void glPresent(const uint32_t* px, int w, int h) {
     static int tw = 0, th = 0;
-    glViewport(0, 0, OUT_W, OUT_H); glDisable(GL_DEPTH_TEST); glDisable(GL_BLEND);
+    glViewport(0, 0, OUT_W, OUT_H); glDisable(GL_DEPTH_TEST); glEnable(GL_BLEND); glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);   // 2D layer is premultiplied ARGB
     glBindTexture(GL_TEXTURE_2D, gTex);
     if (w != tw || h != th) { glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, px); tw = w; th = h; }
     else glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
@@ -132,6 +212,8 @@ int main(int, char**) {
     blog("== Hairpin Rush build %d ==", (int)BUILD_ID);
     if (!glInit()) { blog("glInit FAILED"); for (;;) sceKernelUsleep(100000); }
     blog("gl up");
+    bool useGpu = gpuInit();
+    blog("gpu scene %s", useGpu ? "ENABLED" : "failed - using CPU renderer");
 
     OrbisUserServiceInitializeParams up; up.priority = ORBIS_KERNEL_PRIO_FIFO_LOWEST;
     int m1 = sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_USER_SERVICE);
@@ -154,6 +236,7 @@ int main(int, char**) {
 
     static Game game;
     game.set_threads(1);
+    game.renderer().gpu = useGpu;
     load_cfg(game);
     blog("game ok");
     static std::vector<uint32_t> fb, up_;
@@ -202,7 +285,8 @@ int main(int, char**) {
         if ((int)fb.size() != w * h) { fb.assign(size_t(w) * h, 0); up_.assign(size_t(w) * h, 0); }
         game.render(fb.data());
         if (frame == 0) blog("first frame rendered %dx%d", w, h);
-        for (size_t i = 0; i < fb.size(); i++) { uint32_t p = fb[i]; up_[i] = (p & 0xFF00FF00u) | ((p >> 16) & 0xFFu) | ((p & 0xFFu) << 16) | 0xFF000000u; }  // ARGB -> ABGR bytes (RGBA)
+        for (size_t i = 0; i < fb.size(); i++) { uint32_t p = fb[i]; up_[i] = (p & 0xFF00FF00u) | ((p >> 16) & 0xFFu) | ((p & 0xFFu) << 16) | (useGpu ? 0u : 0xFF000000u); }  // ARGB -> ABGR bytes (RGBA)
+        if (useGpu) gpuScene(game.renderer(), w, h, frame); else { glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT); }
         glPresent(up_.data(), w, h);
         if (frame < 3 || frame % 600 == 0) blog("frame %d presented dt=%.1fms", frame, dt * 1000.0f);
         frame++;

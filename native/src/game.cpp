@@ -19,14 +19,16 @@ static inline uint32_t mixc(uint32_t a, uint32_t b, float t) {
     for (int i = 0; i < 4; i++) { int s = i * 8; int x = (a >> s) & 255, y = (b >> s) & 255; ch[i] = int(x + (y - x) * t); }
     return argb(ch[3], ch[2], ch[1], ch[0]);
 }
-static inline uint32_t blendpx(uint32_t d, uint32_t s, int a) {
+static inline uint32_t blendpx(uint32_t d, uint32_t s, int a) {      // d is premultiplied ARGB (opaque dst gives the usual result); result is premultiplied
     if (a <= 0) return d;
     if (a >= 255) return 0xFF000000u | (s & 0xFFFFFFu);
     int a256 = a + (a >> 7), ia = 256 - a256;
+    int da = d >> 24;
     int r = ((((s >> 16) & 255) * a256) + (((d >> 16) & 255) * ia)) >> 8;
     int g = ((((s >> 8) & 255) * a256) + (((d >> 8) & 255) * ia)) >> 8;
     int b = (((s & 255) * a256) + ((d & 255) * ia)) >> 8;
-    return 0xFF000000u | (uint32_t(r) << 16) | (uint32_t(g) << 8) | uint32_t(b);
+    int oa = da >= 255 ? 255 : std::min(255, ((a256 * 255) >> 8) + ((da * ia) >> 8));
+    return (uint32_t(oa) << 24) | (uint32_t(r) << 16) | (uint32_t(g) << 8) | uint32_t(b);
 }
 static inline uint32_t hash32(uint32_t x) { x ^= x >> 16; x *= 0x7feb352dU; x ^= x >> 15; x *= 0x846ca68bU; x ^= x >> 16; return x; }
 static inline float hf(uint32_t x) { return float(hash32(x) & 0xFFFF) / 65535.0f; }
