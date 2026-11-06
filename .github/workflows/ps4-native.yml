@@ -52,7 +52,7 @@ jobs:
           echo "OO_PS4_TOOLCHAIN=$(dirname "$LX")" >> "$GITHUB_ENV"
           chmod -R +x "$(dirname "$LX")/bin" || true
 
-      - name: Build PKG (OpenOrbis piglet sample base: GPU presents the frame)
+      - name: "Build PKG (OpenOrbis piglet sample, GPU presents the frame)"
         run: |
           S="$OO_PS4_TOOLCHAIN/samples"; N=HairpinRush; BUILD=${{ github.run_number }}; VER=$(printf "01.%02d" $((BUILD % 100)))
           if [ ! -d "$S/piglet" ]; then
