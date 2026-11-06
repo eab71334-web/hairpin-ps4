@@ -74,6 +74,16 @@ jobs:
             cp ./*.pkg "$GITHUB_WORKSPACE/HairpinRush.pkg"; cp ./*.pkg "$GITHUB_WORKSPACE/HairpinRush-b$BUILD.pkg" )
           ls -la "$GITHUB_WORKSPACE"/*.pkg
 
+      - name: Commit the new PKG to the repo root
+        run: |
+          cp HairpinRush.pkg /tmp/HairpinRush.pkg
+          git config user.name "github-actions"; git config user.email "actions@github.com"
+          git fetch -q origin main && git checkout -q -B main origin/main
+          cp /tmp/HairpinRush.pkg HairpinRush.pkg
+          git add -f HairpinRush.pkg
+          git commit -m "Build ${{ github.run_number }}: updated HairpinRush.pkg [skip ci]" || true
+          git push origin main || true
+
       - uses: actions/upload-artifact@v4
         with:
           name: HairpinRush-pkg
