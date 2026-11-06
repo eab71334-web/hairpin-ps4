@@ -1,0 +1,67 @@
+name: Build PS4 GPU Probe PKG
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['native/probe/**', '.github/workflows/ps4-probe.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  pkg:
+    runs-on: ubuntu-22.04
+    env:
+      CLR_OPENSSL_VERSION_OVERRIDE: '1.1'
+      DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: sudo apt-get update -y && sudo apt-get install -y clang lld jq
+
+      - name: Install libssl1.1
+        run: |
+          cd /tmp
+          for U in http://security.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.1f-1ubuntu2.24_amd64.deb http://archive.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.1f-1ubuntu2_amd64.deb; do
+            curl -fsSL "$U" -o libssl1.1.deb && break
+          done
+          sudo dpkg -i libssl1.1.deb
+
+      - name: Download OpenOrbis toolchain
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          URL=""
+          for i in 1 2 3 4 5; do
+            URL=$(curl -sL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" https://api.github.com/repos/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/latest | jq -r '[(.assets // [])[] | select(.name|test("linux|toolchain";"i"))][0].browser_download_url // empty')
+            [ -n "$URL" ] && break
+            sleep 8
+          done
+          [ -n "$URL" ] || { echo "no toolchain"; exit 1; }
+          mkdir -p /tmp/oo && curl -sL "$URL" -o /tmp/oo/tc.pkg
+          cd /tmp/oo && (tar -xf tc.pkg 2>/dev/null || unzip -q tc.pkg)
+          LX=$(find /tmp/oo -name link.x | head -1)
+          echo "OO_PS4_TOOLCHAIN=$(dirname "$LX")" >> "$GITHUB_ENV"
+          chmod -R +x "$(dirname "$LX")/bin" || true
+
+      - name: Build probe PKG
+        run: |
+          S="$OO_PS4_TOOLCHAIN/samples"; N=GpuProbe; BUILD=${{ github.run_number }}
+          rm -rf "$S/$N"; cp -r "$S/hello_world" "$S/$N"
+          rm -rf "$S/$N/hello_world"; mkdir -p "$S/$N/$N"
+          cp native/probe/probe_main.cpp native/src/font.h "$S/$N/$N/"
+          for f in icon0.png pic0.png; do for d in $(find "$S/$N" -type d -name sce_sys); do cp "assets/sce_sys/$f" "$d/$f"; done; done
+          ( cd "$S/$N"
+            sed -i "s|^LIBS .*|LIBS        := -lc -lkernel -lc++ -lSceUserService -lSceVideoOut -lSceAudioOut -lScePad -lSceSysmodule -lSDL2\nEXTRAFLAGS := -O2 -std=c++17|" Makefile
+            sed -i "s/BREW00[0-9]*/BREW00792/g; s/IV0000-BREW00792_00-[A-Z0-9]*/IV0000-BREW00792_00-GPUPROBE0000000/; s/^TITLE .*/TITLE       := GPU Probe/" Makefile
+            make
+            cp ./*.pkg "$GITHUB_WORKSPACE/GpuProbe.pkg" )
+          ls -la "$GITHUB_WORKSPACE"/*.pkg
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ps4-probe
+          name: GPU Probe (PS4 PKG)
+          files: GpuProbe.pkg
