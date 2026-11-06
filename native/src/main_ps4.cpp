@@ -14,6 +14,7 @@
 #include <orbis/Pad.h>
 #include <orbis/UserService.h>
 #include <cmath>
+#include <stdlib.h>
 #include <string>
 #include <vector>
 
@@ -134,11 +135,20 @@ int main(int, char**) {
     int m1 = sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_USER_SERVICE);
     int m2 = sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_PAD);
     blog("internal modules 0x%x 0x%x", (unsigned)m1, (unsigned)m2);
-    sceUserServiceInitialize(&up);
-    int userId = 0; sceUserServiceGetInitialUser(&userId);
-    scePadInit();
-    int pad = scePadOpen(userId, 0, 0, NULL);
-    blog("pad open %d", pad);
+    int ui = sceUserServiceInitialize(&up);
+    int userId = 0; int gi = sceUserServiceGetInitialUser(&userId);
+    int pi = scePadInit();
+    blog("userservice init 0x%x, initial user ret 0x%x uid %d, padInit 0x%x", (unsigned)ui, (unsigned)gi, userId, (unsigned)pi);
+    // Try several user ids (the initial user, the system/everyone ids); poll every pad that opened and use whichever delivers data.
+    int cand[6] = {userId, 0xFF, 0xFE, 1, 2, 0};
+    int pads[6]; int np = 0;
+    for (int i = 0; i < 6; i++) {
+        bool dup = false; for (int j = 0; j < i; j++) if (cand[j] == cand[i]) dup = true;
+        if (dup) continue;
+        int h = scePadOpen(cand[i], 0, 0, NULL);
+        blog("pad open uid %d -> %d", cand[i], h);
+        if (h >= 0) pads[np++] = h;
+    }
 
     static Game game;
     game.set_threads(1);
@@ -150,11 +160,16 @@ int main(int, char**) {
     for (;;) {
         PadState ps; ps.down = 0; ps.lx = ps.ly = ps.l2 = ps.r2 = 0;
         OrbisPadData d; memset(&d, 0, sizeof d);
-        if (pad < 0) pad = scePadOpen(userId, 0, 0, NULL);      // retry until the pad opens
-        int rr = (pad >= 0) ? scePadReadState(pad, &d) : -1;    // the war project ignores the return code: use the data regardless
+        int rr = -1;
+        for (int k = 0; k < np; k++) {                          // use the first pad that shows any activity
+            OrbisPadData t; memset(&t, 0, sizeof t);
+            int r = scePadReadState(pads[k], &t);
+            bool active = t.buttons != 0 || abs((int)t.leftStick.x - 128) > 20 || abs((int)t.leftStick.y - 128) > 20 || abs((int)t.rightStick.x - 128) > 20 || t.analogButtons.l2 > 10 || t.analogButtons.r2 > 10;
+            if (k == 0 || active) { d = t; rr = r; if (active) { static int lg = 0; if (lg++ < 3) blog("pad %d (handle %d) active", k, pads[k]); break; } }
+        }
         { static uint32_t lastB = 0xFFFFFFFFu; static int n = 0;
           if ((d.buttons != lastB) && n < 30) { lastB = d.buttons; n++; blog("pad ret=0x%x btn=%05X LS %d,%d RS %d,%d L2 %d R2 %d", (unsigned)rr, (unsigned)d.buttons, d.leftStick.x, d.leftStick.y, d.rightStick.x, d.rightStick.y, d.analogButtons.l2, d.analogButtons.r2); } }
-        if (pad >= 0) {
+        if (np > 0) {
             uint32_t b = d.buttons, o = 0;
             if (b & ORBIS_PAD_BUTTON_CROSS) o |= B_CROSS;
             if (b & ORBIS_PAD_BUTTON_CIRCLE) o |= B_CIRCLE;
