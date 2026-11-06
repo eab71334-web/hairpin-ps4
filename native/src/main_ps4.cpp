@@ -1,11 +1,18 @@
 // Copyright (c) 2026 Sabak Studios. All rights reserved.
-// PS4 platform layer (OpenOrbis toolchain): SDL2 window + scaling, ScePad for the DualShock 4, settings file in /data.
-// Built by .github/workflows/ps4-native.yml. Never run on a console by the author - fix API-name issues here only.
+// PS4 platform layer (OpenOrbis "piglet" sample base): the console GPU (Sony's Piglet / OpenGL ES 2.0 with the
+// precompiled system shaders) presents and upscales the CPU-rendered frame to 1080p. Pad via ScePad, settings in /data.
+// GPU init follows the war project's proven path (privileged eboot + Piglet). Built by .github/workflows/ps4-native.yml.
 #include "game.h"
-#include <SDL2/SDL.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdarg.h>
+#include <orbis/libkernel.h>
+#include <orbis/Pigletv2VSH.h>
+#include <orbis/SystemService.h>
+#include <orbis/Sysmodule.h>
 #include <orbis/Pad.h>
 #include <orbis/UserService.h>
-#include <cstdio>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -33,40 +40,117 @@ static void save_cfg(const Game& g) {
     fclose(f);
 }
 
-static void blog(const char* m) {                              // boot trace: /data/hairpin_boot.txt (last line = where it died)
-    FILE* f = fopen("/data/hairpin_boot.txt", "ab");
-    if (f) { fputs(m, f); fputc('\n', f); fclose(f); }
+
+static void blog(const char* f, ...) {                          // boot trace: /data/hairpin_boot.txt (last line = where it died)
+    FILE* fp = fopen("/data/hairpin_boot.txt", "ab");
+    if (!fp) return;
+    va_list a; va_start(a, f); vfprintf(fp, f, a); va_end(a);
+    fputc('\n', fp); fclose(fp);
 }
 
-int main() {
+struct NikShader { char* ident; unsigned char hash[16]; uint64_t len; unsigned char* code; };
+extern "C" NikShader scePrecompiledShaderEntries[];
+static bool fetchSh(const char* n, unsigned char*& p, uint64_t& l) {
+    for (NikShader* e = scePrecompiledShaderEntries; e->ident; ++e)
+        if (!strcmp(n, e->ident)) { p = e->code; l = e->len; return true; }
+    return false;
+}
+
+static EGLDisplay gD = EGL_NO_DISPLAY; static EGLSurface gS = EGL_NO_SURFACE; static EGLContext gC = EGL_NO_CONTEXT;
+static GLuint gTex = 0, gProg = 0;
+static GLint uMV = -1, uPR = -1, uTS = -1, uSam = -1, uOp = -1, aV = -1;
+
+static bool glInit() {
+    blog("glInit begin");
+    int mret = 0;
+    const char* rw = sceKernelGetFsSandboxRandomWord();
+    std::string pre = std::string("/") + (rw ? rw : "") + "/common/lib/";
+    int pg = (int)sceKernelLoadStartModule((pre + "libScePigletv2VSH.sprx").c_str(), 0, NULL, 0, NULL, &mret);
+    if (pg < 0) { blog("piglet load fail 0x%x", pg); return false; }
+    int pc = (int)sceKernelLoadStartModule((pre + "libScePrecompiledShaders.sprx").c_str(), 0, NULL, 0, NULL, &mret);
+    if (pc < 0) { blog("shaders load fail 0x%x", pc); return false; }
+    blog("modules loaded");
+    OrbisPglConfig c; memset(&c, 0, sizeof(c)); c.size = sizeof(c);
+    c.flags = ORBIS_PGL_FLAGS_USE_COMPOSITE_EXT | ORBIS_PGL_FLAGS_USE_FLEXIBLE_MEMORY | 0x60; c.processOrder = 1;
+    c.systemSharedMemorySize = 250 * 1024 * 1024; c.videoSharedMemorySize = 512 * 1024 * 1024; c.maxMappedFlexibleMemory = 170 * 1024 * 1024;
+    c.drawCommandBufferSize = 1 * 1024 * 1024; c.lcueResourceBufferSize = 1 * 1024 * 1024;
+    c.dbgPosCmd_0x40 = OUT_W; c.dbgPosCmd_0x44 = OUT_H; c.dbgPosCmd_0x48 = 0; c.dbgPosCmd_0x4C = 0; c.unk_0x5C = 2;
+    if (!scePigletSetConfigurationVSH(&c)) { blog("piglet config fail"); return false; }
+    OrbisPglWindow w = {0, (khronos_uint32_t)OUT_W, (khronos_uint32_t)OUT_H};
+    EGLint at[] = {EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8, EGL_DEPTH_SIZE, 0, EGL_STENCIL_SIZE, 0,
+                   EGL_SAMPLE_BUFFERS, 0, EGL_SAMPLES, 0, EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_NONE};
+    const EGLint ca[] = {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE}; const EGLint wa[] = {EGL_RENDER_BUFFER, EGL_BACK_BUFFER, EGL_NONE};
+    EGLConfig cfg; EGLint nc = 0, maj = 0, mi = 0;
+    gD = eglGetDisplay(EGL_DEFAULT_DISPLAY); if (gD == EGL_NO_DISPLAY) { blog("no display"); return false; }
+    if (!eglInitialize(gD, &maj, &mi)) { blog("egl init fail 0x%x", eglGetError()); return false; }
+    eglBindAPI(EGL_OPENGL_ES_API); eglSwapInterval(gD, 1);
+    if (!eglChooseConfig(gD, at, &cfg, 1, &nc) || nc < 1) { blog("choose cfg fail"); return false; }
+    gS = eglCreateWindowSurface(gD, cfg, &w, wa); if (gS == EGL_NO_SURFACE) { blog("surface fail 0x%x", eglGetError()); return false; }
+    gC = eglCreateContext(gD, cfg, EGL_NO_CONTEXT, ca); if (gC == EGL_NO_CONTEXT) { blog("ctx fail 0x%x", eglGetError()); return false; }
+    if (!eglMakeCurrent(gD, gS, gS, gC)) { blog("makecurrent fail 0x%x", eglGetError()); return false; }
+    blog("GL %s | %s", (const char*)glGetString(GL_VERSION), (const char*)glGetString(GL_RENDERER));
+    sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_SYSTEM_SERVICE); sceSystemServiceHideSplashScreen();
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1); glGenTextures(1, &gTex); glBindTexture(GL_TEXTURE_2D, gTex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    unsigned char *vp, *fp; uint64_t vl, fl;
+    if (!fetchSh("texmap/v_2.vert", vp, vl) || !fetchSh("texmap/f_2.frag", fp, fl)) { blog("shader entries missing"); return false; }
+    GLuint fs = glCreateShader(GL_FRAGMENT_SHADER), vs = glCreateShader(GL_VERTEX_SHADER); gProg = glCreateProgram();
+    glShaderBinary(1, &vs, 0, vp, vl); glShaderBinary(1, &fs, 0, fp, fl); glAttachShader(gProg, vs); glAttachShader(gProg, fs); glLinkProgram(gProg);
+    if (glGetError()) { blog("shader link fail"); return false; }
+    uMV = glGetUniformLocation(gProg, "u_modelViewMatrix"); uPR = glGetUniformLocation(gProg, "u_projectionMatrix"); uTS = glGetUniformLocation(gProg, "u_textureSpaceMatrix");
+    uSam = glGetUniformLocation(gProg, "s_sampler"); uOp = glGetUniformLocation(gProg, "u_opacity"); aV = glGetAttribLocation(gProg, "a_vertex");
+    if (uMV < 0 || uPR < 0 || uTS < 0 || uSam < 0 || uOp < 0 || aV < 0) { blog("uniform lookup fail"); return false; }
+    blog("piglet ok");
+    return true;
+}
+
+// Upload the CPU frame (RGBA, w x h) as a texture and let the GPU draw it full-screen (bilinear upscale to 1080p).
+static void glPresent(const uint32_t* px, int w, int h) {
+    static int tw = 0, th = 0;
+    glViewport(0, 0, OUT_W, OUT_H); glDisable(GL_DEPTH_TEST); glDisable(GL_BLEND);
+    glBindTexture(GL_TEXTURE_2D, gTex);
+    if (w != tw || h != th) { glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, px); tw = w; th = h; }
+    else glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    static const GLfloat v[] = {0, 1, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0, 1, 0};
+    GLfloat id[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    GLfloat mv[16] = {(GLfloat)OUT_W, 0, 0, 0, 0, (GLfloat)OUT_H, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    GLfloat pr[16] = {2.f / OUT_W, 0, 0, 0, 0, -2.f / OUT_H, 0, 0, 0, 0, -1, 0, -1, 1, 0, 1};
+    glUseProgram(gProg); glUniform1f(uOp, 1.f); glUniformMatrix4fv(uMV, 1, GL_FALSE, mv); glUniformMatrix4fv(uPR, 1, GL_FALSE, pr); glUniformMatrix4fv(uTS, 1, GL_FALSE, id);
+    glVertexAttribPointer(aV, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), v); glEnableVertexAttribArray(aV);
+    glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, gTex); glUniform1i(uSam, 0); glDrawArrays(GL_TRIANGLES, 0, 6);
+    eglSwapBuffers(gD, gS);
+}
+
+static uint32_t ticks() { return (uint32_t)(sceKernelGetProcessTime() / 1000); }
+
+int main(int, char**) {
     { FILE* f = fopen("/data/hairpin_boot.txt", "wb"); if (f) fclose(f); }
-    blog("start");
-    if (SDL_Init(SDL_INIT_VIDEO) != 0) return 1;
-    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");      // bilinear upscale of the internal 540p/720p image to 1080p
-    blog("sdl init ok");
-    SDL_Window* win = SDL_CreateWindow("Hairpin Rush", 0, 0, OUT_W, OUT_H, 0);
-    SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    blog("renderer ok");
-    SDL_Texture* tex = nullptr;
-    int tw = 0, th = 0;
+    blog("== Hairpin Rush build %d ==", (int)BUILD_ID);
+    if (!glInit()) { blog("glInit FAILED"); for (;;) sceKernelUsleep(100000); }
+    blog("gl up");
 
-    sceUserServiceInitialize(nullptr);
-    int userId = 0;
-    sceUserServiceGetInitialUser(&userId);
+    OrbisUserServiceInitializeParams up; up.priority = ORBIS_KERNEL_PRIO_FIFO_LOWEST;
+    int m1 = sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_USER_SERVICE);
+    int m2 = sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_PAD);
+    blog("internal modules 0x%x 0x%x", (unsigned)m1, (unsigned)m2);
+    sceUserServiceInitialize(&up);
+    int userId = 0; sceUserServiceGetInitialUser(&userId);
     scePadInit();
-    int pad = scePadOpen(userId, 0, 0, nullptr);
+    int pad = scePadOpen(userId, 0, 0, NULL);
+    blog("pad open %d", pad);
 
-    blog("pad ok");
-    Game game;
-    game.set_threads(1);                                        // the PS4 has 8 Jaguar cores (6-7 usable by a game)
+    static Game game;
+    game.set_threads(1);
     load_cfg(game);
     blog("game ok");
-    std::vector<uint32_t> fb;
-    uint32_t last = SDL_GetTicks();
+    static std::vector<uint32_t> fb, up_;
+    uint32_t last = ticks();
+    int frame = 0;
     for (;;) {
-        PadState ps;
-        OrbisPadData d;
-        if (scePadReadState(pad, &d) == 0) {
+        PadState ps; ps.down = 0; ps.lx = ps.ly = ps.l2 = ps.r2 = 0;
+        OrbisPadData d; memset(&d, 0, sizeof d);
+        if (pad >= 0 && scePadReadState(pad, &d) == 0) {
             uint32_t b = d.buttons, o = 0;
             if (b & ORBIS_PAD_BUTTON_CROSS) o |= B_CROSS;
             if (b & ORBIS_PAD_BUTTON_CIRCLE) o |= B_CIRCLE;
@@ -88,24 +172,19 @@ int main() {
             ps.l2 = d.analogButtons.l2 / 255.0f;
             ps.r2 = d.analogButtons.r2 / 255.0f;
         }
-        uint32_t now = SDL_GetTicks();
+        uint32_t now = ticks();
         float dt = fminf(0.05f, (now - last) / 1000.0f);
         last = now;
         game.update(dt, ps);
         if (game.take_dirty()) save_cfg(game);
         int w = game.render_w(), h = game.render_h();
-        if (w != tw || h != th) {                                   // quality changed -> new internal resolution
-            if (tex) SDL_DestroyTexture(tex);
-            tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, w, h);
-            fb.assign(size_t(w) * h, 0);
-            tw = w; th = h;
-        }
+        if ((int)fb.size() != w * h) { fb.assign(size_t(w) * h, 0); up_.assign(size_t(w) * h, 0); }
         game.render(fb.data());
-        { static bool once = false; if (!once) { once = true; blog("first frame ok"); } }
-        SDL_UpdateTexture(tex, nullptr, fb.data(), w * 4);
-        SDL_RenderClear(ren);
-        SDL_RenderCopy(ren, tex, nullptr, nullptr);
-        SDL_RenderPresent(ren);
+        if (frame == 0) blog("first frame rendered %dx%d", w, h);
+        for (size_t i = 0; i < fb.size(); i++) { uint32_t p = fb[i]; up_[i] = (p & 0xFF00FF00u) | ((p >> 16) & 0xFFu) | ((p & 0xFFu) << 16) | 0xFF000000u; }  // ARGB -> ABGR bytes (RGBA)
+        glPresent(up_.data(), w, h);
+        if (frame < 3 || frame % 600 == 0) blog("frame %d presented dt=%.1fms", frame, dt * 1000.0f);
+        frame++;
     }
     return 0;
 }
