@@ -1,6 +1,8 @@
 // Copyright (c) 2026 Sabak Studios. All rights reserved.
 // Small multi-threaded software 3D rasterizer (flat shaded triangles, z-buffer, fog) used by the PS4 port.
 #pragma once
+#include <stdlib.h>
+#include <math.h>
 #include <cmath>
 #include <cstdint>
 #include <vector>
