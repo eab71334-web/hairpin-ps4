@@ -30,6 +30,12 @@ public:
     bool take_dirty() { bool d = dirty; dirty = false; return d; }
     // read-only state (tests / HUD)
     float speed_kmh() const { return speed * 3.6f; }
+    float rpm() const { return rpm_; }
+    int gear() const { return gear_ + 1; }
+    float skid() const { return skid_; }
+    float lat_g() const { return lat_g_; }
+    float grip_mu() const { return 1.28f * powf(gripf, 0.8f); }
+    static float steer_lock_pub(float v, float mu) { return steer_lock(v, mu); }
     int place() const { return place_; }
     bool finished() const { return state == FINISH; }
     float time_s() const { return race_t; }
@@ -61,6 +67,9 @@ private:
     int stage_loaded = -1;
     uint32_t* fb_ = nullptr;
     // race state (metres, m/s)
+    float vy_ = 0, wz_ = 0, steer_ang_ = 0, rpm_ = 1000, shift_t_ = 0, skid_ = 0, lat_g_ = 0; int gear_ = 0;   // physics state
+    static float steer_lock(float v, float mu);
+    void step_car(float dt, float gas, float brake, bool hb, float steer);
     float s_ = 0, d_ = 0, yaw_ = 0, speed = 0, race_t = 0, steer_vis = 0, bob_t = 0, shake = 0, braking = 0;
     int place_ = 6;
     float demo_s = 0, spin = 0;

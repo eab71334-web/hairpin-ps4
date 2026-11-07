@@ -217,6 +217,7 @@ void Game::reset_race() {
     load_stage();
     apply_car();
     s_ = 0; d_ = 0; yaw_ = 0; speed = 0; race_t = 0; place_ = 6; shake = 0; braking = 0; steer_vis = 0;
+    vy_ = 0; wz_ = 0; steer_ang_ = 0; rpm_ = 1000; gear_ = 0; shift_t_ = 0; skid_ = 0; lat_g_ = 0;
     rivals.clear();
     const int models[5] = {3, 6, 2, 7, 0}, paints[5] = {1, 4, 5, 6, 12};
     for (int i = 0; i < 5; i++) {
@@ -339,29 +340,17 @@ void Game::update(float dt, const PadState& pad) {
     }
     // ---------------- RACE
     if (ed_raw & bind[A_PAUSE]) { state = PAUSED; menu_sel = 0; return; }
-    if (ed_raw & bind[A_RESET]) { d_ = 0; yaw_ = 0; speed *= 0.4f; }
+    if (ed_raw & bind[A_RESET]) { d_ = 0; yaw_ = 0; vy_ = 0; wz_ = 0; speed *= 0.4f; }
     if (ed_raw & bind[A_CAMERA]) { fpv = !fpv; dirty = true; }
     race_t += dt;
     float gas = axis(A_GAS, pad, dn), brake = axis(A_BRAKE, pad, dn);
     bool hb = (dn & bind[A_HANDBRAKE]) != 0;
-    float steer = fabsf(pad.lx) > 0.1f ? pad.lx : 0.0f;                    // + = right
+    float steer = fabsf(pad.lx) > 0.08f ? pad.lx : 0.0f;                   // + = right
     if (dn & B_LEFT) steer = -1.0f;
     if (dn & B_RIGHT) steer = 1.0f;
     steer_vis += (steer - steer_vis) * std::min(1.0f, dt * 9.0f);
     braking = (brake > 0.1f || hb) ? 1.0f : 0.0f;
-    bool off = fabsf(d_) > 7.6f;
-    float a = gas * 17.0f * accf * (1.0f - speed / vmax) - brake * 32.0f - (gas < 0.05f ? 3.0f : 0.0f) - (hb ? 16.0f : 0.0f);
-    if (off) a -= 14.0f + speed * 0.5f;
-    speed = clampf(speed + a * dt, 0.0f, vmax);
-    if (off && speed > 16.0f) speed = std::max(16.0f, speed - 22.0f * dt);
-    float curv = world.curvature_at(s_);                                    // + = road turns left
-    float authority = (1.7f * powf(gripf, 0.7f)) / (1.0f + speed / 38.0f) * (hb ? 1.5f : 1.0f);
-    yaw_ += (-steer * authority - yaw_ * 1.6f * gripf) * dt - curv * speed * dt;
-    yaw_ = clampf(yaw_, -0.9f, 0.9f);
-    s_ += speed * cosf(yaw_) * dt;
-    d_ += speed * sinf(yaw_) * dt;                                          // yaw_ > 0 = nose turned left -> d_ (left is +) grows
-    d_ = clampf(d_, -13.0f, 13.0f);
-    if (fabsf(d_) >= 13.0f) speed *= (1.0f - 4.0f * dt);
+    step_car(dt, gas, brake, hb, steer);
     bob_t += dt * speed * 0.5f;
     // rivals
     int ahead = 0;
@@ -384,6 +373,87 @@ void Game::update(float dt, const PadState& pad) {
     if (s_ >= world.length() - 20.0f) { state = FINISH; state_t = 0; }
 }
 
+
+
+float Game::steer_lock(float v, float mu) {       // max road-wheel angle (rad): about 1.3x the grip limit, so full stick slides a little instead of spinning
+    return clampf(1.3f * mu * 9.81f * 2.55f / (v * v + 15.0f), 0.05f, 0.52f);
+}
+
+// ------------------------------------------------------------------ car physics (bicycle model with tyre slip, weight transfer, gearbox)
+// State is road-relative: s_ along the road, d_ lateral (left +), yaw_ = body heading relative to the road tangent (left +),
+// speed = forward speed in the car frame, vy_ = sideways speed (left +), wz_ = yaw rate (left +).
+void Game::step_car(float dt, float gas, float brake, bool hb, float steer) {
+    const float M = 1350.0f, A = 1.25f, B = 1.30f, L = A + B, IZ = 2100.0f, G = 9.81f, HCG = 0.52f;
+    float steps = std::max(1.0f, std::ceil(dt / 0.008f));
+    float h = dt / steps;
+    bool off = fabsf(d_) > 7.6f;
+    float mu = 1.28f * powf(gripf, 0.8f) * (off ? 0.58f : 1.0f);
+    float P = 118000.0f * accf;                                            // engine power, W
+    float vtop = vmax;
+    for (int it = 0; it < int(steps); it++) {
+        float vx = std::max(speed, 0.0f);
+        float ve = std::max(vx, 2.5f);                                     // slip-angle speed floor (low-speed stability)
+        // steering: speed sensitive lock, smoothed, with counter-steer assist while sliding
+        float lock = Game::steer_lock(vx, mu);
+        float tgt = -clampf(steer, -1.0f, 1.0f);
+        tgt = (tgt < 0 ? -1.0f : 1.0f) * powf(fabsf(tgt), 1.35f) * lock;
+        float beta = atan2f(vy_, ve);
+        if (vx > 6.0f) tgt += clampf(-beta * 0.55f, -0.18f, 0.18f) * (fabsf(steer) < 0.2f ? 1.0f : 0.5f);   // drift assist
+        float rate = (fabsf(tgt) < fabsf(steer_ang_) ? 7.5f : 5.0f) * (1.0f + 0.5f * std::min(1.0f, vx / 20.0f));
+        steer_ang_ += clampf(tgt - steer_ang_, -rate * h * lock * 2.0f, rate * h * lock * 2.0f);
+        // longitudinal forces
+        float drag = P * vx * vx / (vtop * vtop * vtop) + 90.0f + (off ? 1500.0f + vx * 120.0f : 0.0f);
+        float rpm_ratio = 0.0f; int gear = gear_;
+        static const float GMAX[6] = {0.19f, 0.34f, 0.50f, 0.67f, 0.84f, 1.02f};
+        if (shift_t_ > 0) shift_t_ -= h;
+        if (gear < 5 && vx > GMAX[gear] * vtop * 0.97f) { gear++; shift_t_ = 0.14f; }
+        if (gear > 0 && vx < GMAX[gear - 1] * vtop * 0.82f) { gear--; shift_t_ = 0.10f; }
+        gear_ = gear;
+        float gmax = GMAX[gear] * vtop;
+        rpm_ratio = clampf(vx / gmax, 0.0f, 1.1f);
+        rpm_ = lerpf(rpm_, 1000.0f + rpm_ratio * 6600.0f + gas * 350.0f, std::min(1.0f, h * 14.0f));
+        float tq = 1.0f - 0.45f * (rpm_ratio - 0.72f) * (rpm_ratio - 0.72f) * 4.0f;                       // torque curve peaks at ~70% rpm
+        float Fdrive = gas * std::min(P * clampf(tq, 0.4f, 1.0f) / std::max(vx, 7.0f) * (gear == 0 ? 1.15f : 1.0f), 1.0e9f);
+        if (shift_t_ > 0) Fdrive *= 0.15f;
+        if (vx >= vtop) Fdrive = 0;
+        float Fbrake = brake * 1.0f * mu * M * G * 0.92f + (hb ? 0.30f * M * G : 0.0f) + (gas < 0.05f ? 0.06f * M * G : 0.0f);
+        float Fx = Fdrive - Fbrake * (vx > 0.2f ? 1.0f : 0.0f) - drag * (vx > 0.05f ? 1.0f : 0.0f);
+        float ax = Fx / M;
+        // weight transfer
+        float Fzf = M * G * B / L - M * ax * HCG / L, Fzr = M * G * A / L + M * ax * HCG / L;
+        Fzf = std::max(Fzf, 1500.0f); Fzr = std::max(Fzr, 1500.0f);
+        // tyre forces (saturating, friction circle on the driven rear axle)
+        float af = atan2f(vy_ + A * wz_, ve) - steer_ang_, ar = atan2f(vy_ - B * wz_, ve);
+        float rear_mu = mu * (hb ? 0.42f : 1.0f);
+        float use_r = clampf(fabsf(Fdrive) / std::max(rear_mu * Fzr, 1.0f), 0.0f, 0.9f);
+        float Fyf = -mu * Fzf * sinf(1.45f * atanf(8.5f * af));
+        float Fyr = -rear_mu * Fzr * sinf(1.45f * atanf(8.0f * ar)) * sqrtf(1.0f - use_r * use_r * 0.55f);
+        float slip_amt = std::max(fabsf(af), fabsf(ar));
+        skid_ = lerpf(skid_, clampf((slip_amt - 0.10f) * 5.0f, 0.0f, 1.0f) * (vx > 4.0f ? 1.0f : 0.0f) + (hb && vx > 8.0f ? 0.6f : 0.0f), std::min(1.0f, h * 10.0f));
+        // rigid-body update in the car frame
+        float ay = (Fyf * cosf(steer_ang_) + Fyr) / M;
+        float wdot = (A * Fyf * cosf(steer_ang_) - B * Fyr) / IZ - wz_ * 0.9f * (1.0f + vx / 40.0f);       // yaw damping keeps it controllable
+        float vxn = vx + (ax + wz_ * vy_) * h;
+        vy_ += (ay - wz_ * vx) * h;
+        wz_ += wdot * h;
+        speed = std::max(0.0f, vxn);
+        if (speed < 1.5f) { vy_ *= (1.0f - 6.0f * h); wz_ *= (1.0f - 6.0f * h); }
+        // world motion relative to the road
+        float curv = world.curvature_at(s_);                                // + = road turns left
+        yaw_ += (wz_ - curv * speed) * h;
+        yaw_ = clampf(yaw_, -1.2f, 1.2f);
+        float cy = cosf(yaw_), sy = sinf(yaw_);
+        s_ += (speed * cy - vy_ * sy) * h;
+        d_ += (speed * sy + vy_ * cy) * h;
+        lat_g_ = ay / G;
+        if (d_ > 13.0f || d_ < -13.0f) {                                     // barrier: bounce, scrub speed
+            float nrm = d_ > 0 ? -1.0f : 1.0f;
+            d_ = clampf(d_, -13.0f, 13.0f);
+            vy_ = nrm * fabsf(vy_) * 0.3f; speed *= (1.0f - 2.5f * h); wz_ *= 0.8f; shake = 0.35f;
+        }
+    }
+    if (off && speed > 16.0f) speed = std::max(16.0f, speed - 6.0f * dt);
+}
 
 // ------------------------------------------------------------------ 3D scene
 static uint32_t paint_rgb(int p) { return 0xFF000000u | (uint32_t(PAINTS[p].r) << 16) | (uint32_t(PAINTS[p].g) << 8) | PAINTS[p].b; }

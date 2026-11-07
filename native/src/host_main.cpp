@@ -89,15 +89,19 @@ int main(int argc, char** argv) {
     int shots = 0;
     for (int f = 0; f < 60 * 240 && !g.finished(); f++) {
         float v = g.speed_kmh() / 3.6f;
-        float cmax = 0;
-        for (float m = 8; m <= 70; m += 6) cmax = std::max(cmax, fabsf(g.upcoming_curve(m)));
-        float vt = cmax > 1e-3f ? sqrtf(8.5f / cmax) : 80.0f;
+        float vt = 80.0f;                                                  // braking-distance-aware corner speed (planned decel 7 m/s^2)
+        for (float m = 0; m <= 160; m += 8) { float c = fabsf(g.upcoming_curve(m)); if (c > 1e-3f) vt = std::min(vt, sqrtf(5.0f / c + 2.0f * 7.0f * m)); }
         PadState p;
-        bool gas = v < vt + 1.0f, brk = v > vt + 4.0f;
+        bool gas = v < vt + 1.0f, brk = v > vt + 1.5f;
         if (gas) p.down |= g.binding(A_GAS);
         if (brk) p.l2 = 1.0f;
-        float auth = 1.7f / (1.0f + v / 38.0f);
-        float st = -g.upcoming_curve(2.0f) * v / auth + 0.12f * g.lateral() + 1.1f * g.yaw_dbg();
+        // lane-keeping driver for the slip-based physics: feed-forward from road curvature + feedback on lateral offset and heading
+        float vv = std::max(v, 3.0f), curv0 = g.upcoming_curve(0.0f) * 0.6f + g.upcoming_curve(8.0f) * 0.4f;
+        float wz_des = curv0 * vv - (1.26f * g.yaw_dbg() + 0.5f * g.lateral() / vv);       // critically damped lane-keeping (d'' = v*yaw')
+        float delta = wz_des * 2.55f / vv;                                  // steering angle, left +
+        float lock = Game::steer_lock_pub(vv, g.grip_mu());
+        float un = std::max(-1.0f, std::min(1.0f, delta / lock));
+        float st = -(un < 0 ? -1.0f : 1.0f) * powf(fabsf(un), 1.0f / 1.35f);
         p.lx = st < -1 ? -1 : (st > 1 ? 1 : st);
         g.update(dt, p);
         if ((f == 700 || f == 1500 || f == 2300 || f == 3000) && shots < 4) {
