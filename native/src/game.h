@@ -20,6 +20,15 @@ public:
     void render(uint32_t* fb);                 // render_w() x render_h(), 0xAARRGGBB
     int render_w() const;
     int render_h() const;
+    // split-screen support: a pane renders into its own viewport; followers (players 2-4) cannot pause / leave
+    void set_viewport(int w, int h) { vp_w = w; vp_h = h; }
+    void set_follower(bool f) { follower = f; }
+    void mp_begin(int stage, int car, int paint, const Game* src);   // follower start: copies stage / bindings / camera from the leader            // start a countdown with the given stage / car / paint
+    void set_others(const std::vector<Rival>& o) { others = o; }
+    Rival self_info() const { return {s_, d_, speed, 0.0f, car_sel, paint_sel}; }
+    int race_serial() const { return race_serial_; }
+    int mp_players = 1;                                       // menu option: 1 = single player, 2..4 = split screen
+    bool take_mp_launch() { bool b = mp_launch; mp_launch = false; return b; }
     void set_quality(int q) { quality = q < 0 ? 0 : (q > 2 ? 2 : q); dirty = true; }
     int get_quality() const { return quality; }
     void set_threads(int n) { rend.threads = n < 1 ? 1 : n; }
@@ -73,7 +82,8 @@ private:
     float s_ = 0, d_ = 0, yaw_ = 0, speed = 0, race_t = 0, steer_vis = 0, bob_t = 0, shake = 0, braking = 0;
     int place_ = 6;
     float demo_s = 0, spin = 0;
-    std::vector<Rival> rivals;
+    std::vector<Rival> rivals, others;
+    int vp_w = 0, vp_h = 0, race_serial_ = 0; bool follower = false, mp_launch = false;
     float topf = 1, accf = 1, gripf = 1, armf = 1, vmax = 50;
     // settings
     int quality = 1;                           // 0 = 540p, 1 = 720p, 2 = 1080p internal resolution

@@ -2,6 +2,7 @@
 // Host test (no SDL, no PS4): menu navigation, button remapping, a scripted race, timing, PPM screenshots.
 //   ./host_test [out_dir]   -> exit 0 when everything passes
 #include "game.h"
+#include "mp.h"
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -158,6 +159,26 @@ int main(int argc, char** argv) {
             int r = ((p >> 16) & 255) + (((d >> 16) & 255) * ia) / 255, g = ((p >> 8) & 255) + (((d >> 8) & 255) * ia) / 255, b = (p & 255) + ((d & 255) * ia) / 255;
             img[i] = 0xFF000000u | (std::min(255, r) << 16) | (std::min(255, g) << 8) | std::min(255, b); }
         if (out) { char path[512]; snprintf(path, sizeof path, "%s/gpu_emulated_race.ppm", out); FILE* fp = fopen(path, "wb"); if (fp) { fprintf(fp, "P6\n%d %d\n255\n", W, H); for (int i = 0; i < W * H; i++) { uint8_t c[3] = {uint8_t(img[i] >> 16), uint8_t(img[i] >> 8), uint8_t(img[i])}; fwrite(c, 1, 3, fp); } fclose(fp); } }
+    }
+    // --- split screen: 2, 3, 4 players
+    for (int np = 2; np <= 4; np++) {
+        static Multi M2; Multi& M = M2;
+        M.count = 1; M.lead.set_viewport(0, 0); M.lead.state = Game::MENU; M.lead.menu_sel = 7; M.lead.mp_players = np; M.lead.set_others({});
+        PadState pads[4], idle; M.update(1 / 60.0f, pads);
+        M.lead.menu_sel = 0; pads[0].down = B_CROSS; M.update(1 / 60.0f, pads); pads[0] = idle; M.update(1 / 60.0f, pads);
+        char m[64]; snprintf(m, sizeof m, "split screen %d players starts", np);
+        CHECK(M.count == np && M.lead.state == Game::COUNTDOWN, m);
+        for (int i = 0; i < 400; i++) { for (int k = 0; k < 4; k++) { pads[k].down = B_R2; pads[k].r2 = 1; } pads[1].lx = 0.0f; M.update(1 / 60.0f, pads); }
+        bool moved = true; for (int i = 0; i < np; i++) moved = moved && M.pane(i).speed_kmh() > 30;
+        snprintf(m, sizeof m, "split screen %d players: every car is driving", np); CHECK(moved, m);
+        std::vector<uint32_t> mpo; std::vector<std::vector<uint32_t>> tmp;
+        auto t0 = std::chrono::steady_clock::now(); M.render(mpo, tmp);
+        double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        printf("TIME split %d players CPU: %.1f ms\n", np, ms);
+        char nm[32]; snprintf(nm, sizeof nm, "split_%d", np); save_ppm(out, nm, OUT_W, OUT_H, mpo);
+        // leader back to the main menu ends the split screen
+        M.lead.state = Game::MENU; M.update(1 / 60.0f, pads);
+        snprintf(m, sizeof m, "split screen %d players: back to single screen", np); CHECK(M.count == 1, m);
     }
     // --- timing of one frame at each internal resolution (host CPU; the PS4 Jaguar CPU is several times slower)
     for (int thr = 1; thr <= 2; thr++) for (int q = 0; q < 3; q++) {

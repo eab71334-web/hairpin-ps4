@@ -216,6 +216,7 @@ void Game::apply_car() {
 void Game::reset_race() {
     load_stage();
     apply_car();
+    race_serial_++;
     s_ = 0; d_ = 0; yaw_ = 0; speed = 0; race_t = 0; place_ = 6; shake = 0; braking = 0; steer_vis = 0;
     vy_ = 0; wz_ = 0; steer_ang_ = 0; rpm_ = 1000; gear_ = 0; shift_t_ = 0; skid_ = 0; lat_g_ = 0;
     rivals.clear();
@@ -226,8 +227,13 @@ void Game::reset_race() {
     }
 }
 
-int Game::render_w() const { static const int w[3] = {960, 1280, 1920}; return w[quality]; }
-int Game::render_h() const { static const int h[3] = {540, 720, 1080}; return h[quality]; }
+int Game::render_w() const { static const int w[3] = {960, 1280, 1920}; return vp_w ? vp_w : w[quality]; }
+int Game::render_h() const { static const int h[3] = {540, 720, 1080}; return vp_h ? vp_h : h[quality]; }
+void Game::mp_begin(int stage, int car, int paint, const Game* src) {
+    stage_sel = stage; car_sel = car; paint_sel = paint;
+    if (src) { for (int i = 0; i < A_COUNT; i++) bind[i] = src->bind[i]; fpv = src->fpv; quality = src->quality; }
+    reset_race(); state = COUNTDOWN; state_t = 0;
+}
 
 float Game::axis(int a, const PadState& pad, uint32_t dn) const {
     uint32_t b = bind[a];
@@ -270,18 +276,19 @@ void Game::update(float dt, const PadState& pad) {
     auto wrap = [](int v, int n) { return (v % n + n) % n; };
 
     if (state == MENU) {
-        const int N = 7;
+        const int N = 8;
         if (ed & B_UP) menu_sel = wrap(menu_sel - 1, N);
         if (ed & B_DOWN) menu_sel = wrap(menu_sel + 1, N);
         int dir = ((ed & B_RIGHT) ? 1 : 0) - ((ed & B_LEFT) ? 1 : 0);
         bool ok = (ed & B_CROSS) != 0;
-        if (menu_sel == 0 && ok) { reset_race(); state = COUNTDOWN; state_t = 0; }
+        if (menu_sel == 0 && ok) { reset_race(); state = COUNTDOWN; state_t = 0; if (mp_players > 1) mp_launch = true; }
         else if (menu_sel == 1 && ok) { state = GARAGE; garage_row = 0; state_t = 0; }
         else if (menu_sel == 2 && ok) { ctl_return = MENU; state = CONTROLS; ctl_sel = 0; capturing = false; }
         else if (menu_sel == 3 && (dir || ok)) { quality = wrap(quality + (dir ? dir : 1), 3); dirty = true; }
         else if (menu_sel == 4 && (dir || ok)) { show_fps = !show_fps; dirty = true; }
         else if (menu_sel == 5 && (dir || ok)) { stage_sel = wrap(stage_sel + (dir ? dir : 1), STAGE_COUNT); dirty = true; }
         else if (menu_sel == 6 && (dir || ok)) { fpv = !fpv; dirty = true; }
+        else if (menu_sel == 7 && (dir || ok)) { mp_players = (mp_players - 1 + (dir ? dir : 1) + 4) % 4 + 1; }
         return;
     }
     if (state == GARAGE) {
@@ -334,12 +341,13 @@ void Game::update(float dt, const PadState& pad) {
         return;
     }
     if (state == FINISH) {
+        if (follower) return;
         if (state_t > 1.5f && (ed & B_CROSS)) { reset_race(); state = COUNTDOWN; state_t = 0; }
         else if (state_t > 1.5f && (ed & B_CIRCLE)) { state = MENU; menu_sel = 0; state_t = 0; }
         return;
     }
     // ---------------- RACE
-    if (ed_raw & bind[A_PAUSE]) { state = PAUSED; menu_sel = 0; return; }
+    if (!follower && (ed_raw & bind[A_PAUSE])) { state = PAUSED; menu_sel = 0; return; }
     if (ed_raw & bind[A_RESET]) { d_ = 0; yaw_ = 0; vy_ = 0; wz_ = 0; speed *= 0.4f; }
     if (ed_raw & bind[A_CAMERA]) { fpv = !fpv; dirty = true; }
     race_t += dt;
@@ -552,7 +560,9 @@ void Game::scene3d(float) {
         }
         rend.begin(cam, th.sky_top, th.sky_hor, th.fog, 70, 460);
         world.draw(rend, cam, s_cam);
-        for (const Rival& r : rivals) {
+        std::vector<const Rival*> all; for (const Rival& r : rivals) all.push_back(&r); for (const Rival& r : others) all.push_back(&r);
+        for (const Rival* rp_ : all) {
+            const Rival& r = *rp_;
             V3 rp = world.pos_at(r.s, r.d);
             Xf rx = Xf::make(rp, world.heading_at(r.s), world.slope_at(r.s));
             draw_car3d(rend, r.model, rx, paint_rgb(r.paint), false, 0.0f);
@@ -718,19 +728,21 @@ void Game::overlay(Cv& c) {
         c.text(98 * S + 5 * S, 100 * S + 5 * S, sc, argb(140, 255, 90, 20), title);
         c.text(98 * S, 100 * S, sc, rgb(255, 255, 255), title);
         c.text(100 * S, 100 * S + 7 * sc + 12 * S, 3.2f * S, rgb(255, 170, 90), state == MENU ? "SABAK STUDIOS  -  PS4 EDITION" : "RACE IN PROGRESS");
-        const char* mi[7]; char qb[40], lb[40];
+        const char* mi[8]; char qb[40], lb[40], mb[48];
         static const char* QN[3] = {"540P  (FASTEST)", "720P  (BALANCED)", "1080P  (SHARPEST)"};
         int n;
         if (state == MENU) {
             snprintf(qb, sizeof qb, "GRAPHICS:  < %s >", QN[quality]);
             snprintf(lb, sizeof lb, "STAGE:  < %s >", STAGES[stage_sel].name);
-            mi[0] = "START RACE"; mi[1] = "GARAGE"; mi[2] = "CONTROLS"; mi[3] = qb; mi[4] = show_fps ? "FPS COUNTER:  ON" : "FPS COUNTER:  OFF"; mi[5] = lb; mi[6] = fpv ? "CAMERA:  FIRST PERSON" : "CAMERA:  CHASE"; n = 7;
+            mi[0] = "START RACE"; mi[1] = "GARAGE"; mi[2] = "CONTROLS"; mi[3] = qb; mi[4] = show_fps ? "FPS COUNTER:  ON" : "FPS COUNTER:  OFF"; mi[5] = lb; mi[6] = fpv ? "CAMERA:  FIRST PERSON" : "CAMERA:  CHASE";
+            if (mp_players == 1) snprintf(mb, sizeof mb, "SPLIT SCREEN:  < OFF >"); else snprintf(mb, sizeof mb, "SPLIT SCREEN:  < %d PLAYERS >", mp_players);
+            mi[7] = mb; n = 8;
         } else { mi[0] = "RESUME"; mi[1] = "RESTART"; mi[2] = "CONTROLS"; mi[3] = "MAIN MENU"; n = 4; }
         float y0 = 246 * S;
         for (int i = 0; i < n; i++) {
-            float y = y0 + i * 52 * S, sel = (i == menu_sel) ? 1.0f : 0.0f, x = 90 * S + sel * 14 * S;
-            c.rrect(x, y, 560 * S, 44 * S, 12 * S, sel ? rgb(255, 130, 34) : argb(170, 18, 22, 38), sel ? rgb(214, 70, 24) : argb(170, 28, 32, 52));
-            if (sel) c.rrect(x - 8 * S, y + 6 * S, 5 * S, 32 * S, 2 * S, rgb(255, 230, 120));
+            float y = y0 + i * 50 * S, sel = (i == menu_sel) ? 1.0f : 0.0f, x = 90 * S + sel * 14 * S;
+            c.rrect(x, y, 600 * S, 42 * S, 12 * S, sel ? rgb(255, 130, 34) : argb(170, 18, 22, 38), sel ? rgb(214, 70, 24) : argb(170, 28, 32, 52));
+            if (sel) c.rrect(x - 8 * S, y + 6 * S, 5 * S, 30 * S, 2 * S, rgb(255, 230, 120));
             c.text_sh(x + 28 * S, y + 10 * S, 3.4f * S, sel ? rgb(255, 255, 255) : rgb(200, 208, 228), mi[i]);
         }
         prompt(c, 90 * S, H - 62 * S, B_CROSS, "SELECT", S);
@@ -786,7 +798,7 @@ void Game::overlay(Cv& c) {
         c.text_sh(W * 0.5f, y0 + 150 * S, 4.8f * S, rgb(255, 255, 255), b, 1);
         snprintf(b, sizeof b, "TIME  %d:%02d.%d", int(race_t) / 60, int(race_t) % 60, int(race_t * 10) % 10);
         c.text_sh(W * 0.5f, y0 + 210 * S, 4.8f * S, rgb(255, 255, 255), b, 1);
-        if (state_t > 1.5f) { prompt(c, x0 + 80 * S, y0 + ph - 62 * S, B_CROSS, "RACE AGAIN", S); prompt(c, x0 + 380 * S, y0 + ph - 62 * S, B_CIRCLE, "MENU", S); }
+        if (state_t > 1.5f && !follower) { prompt(c, x0 + 80 * S, y0 + ph - 62 * S, B_CROSS, "RACE AGAIN", S); prompt(c, x0 + 380 * S, y0 + ph - 62 * S, B_CIRCLE, "MENU", S); }
     }
     if (show_fps) { snprintf(b, sizeof b, "%d FPS  %dP", int(fps + 0.5f), render_h()); c.text_sh(W * 0.5f, H - 28 * S, 2.6f * S, rgb(120, 255, 160), b, 1); }
 }

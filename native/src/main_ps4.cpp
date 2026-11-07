@@ -3,6 +3,7 @@
 // precompiled system shaders) presents and upscales the CPU-rendered frame to 1080p. Pad via ScePad, settings in /data.
 // GPU init follows the war project's proven path (privileged eboot + Piglet). Built by .github/workflows/ps4-native.yml.
 #include "game.h"
+#include "mp.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -147,9 +148,9 @@ static void gpuDraw(const float* v, size_t nv, const float* vp) {
     for (size_t o = 0; o < nv; o += 60000) { size_t c = std::min<size_t>(60000, nv - o); c -= c % 3; if (!c) break;
         glVertexAttribPointer(gpaP, 3, GL_FLOAT, GL_FALSE, 20, v + o * 5); glVertexAttribPointer(gpaT, 2, GL_FLOAT, GL_FALSE, 20, v + o * 5 + 3); glDrawArrays(GL_TRIANGLES, 0, (GLsizei)c); }
 }
-static void gpuScene(Renderer& r, int w, int h, int frame) {
+static void gpuScene(Renderer& r, int w, int h, int frame, int vx = 0, int vy = 0, int vw = OUT_W, int vh = OUT_H) {
     for (int i = 0; i < 8; i++) glDisableVertexAttribArray(i);
-    glViewport(0, 0, OUT_W, OUT_H); glDisable(GL_BLEND); glDisable(GL_CULL_FACE); glDepthMask(GL_TRUE);
+    glViewport(vx, OUT_H - vy - vh, vw, vh); glEnable(GL_SCISSOR_TEST); glScissor(vx, OUT_H - vy - vh, vw, vh); glDisable(GL_BLEND); glDisable(GL_CULL_FACE); glDepthMask(GL_TRUE);
     glClearColor(0.05f, 0.06f, 0.1f, 1.f); glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glUseProgram(gpPg); glActiveTexture(GL_TEXTURE0); if (gpSam >= 0) glUniform1i(gpSam, 0);
     glEnableVertexAttribArray(gpaP); glEnableVertexAttribArray(gpaT);
@@ -187,6 +188,7 @@ static void gpuScene(Renderer& r, int w, int h, int frame) {
         if (frame < 3 || frame % 600 == 0) blog("gpuScene %d layer %d tris %d err=0x%x", frame, layer, (int)(nv / 3), (unsigned)glGetError());
     }
     for (int i = 0; i < 8; i++) glDisableVertexAttribArray(i);
+    glDisable(GL_SCISSOR_TEST);
 }
 
 // Upload the CPU frame (RGBA, w x h) as a texture and let the GPU draw it full-screen (bilinear upscale to 1080p).
@@ -237,7 +239,14 @@ int main(int, char**) {
         if (h >= 0) pads[np++] = h;
     }
 
-    static Game game;
+    // extra controllers for split screen: one per logged-in user (PS4 gives every controller to a user)
+    int extraPads[3] = {-1, -1, -1};
+    { OrbisUserServiceLoginUserIdList ul; memset(&ul, 0xFF, sizeof ul); int lr = sceUserServiceGetLoginUserIdList(&ul);
+      int k = 0; blog("login users ret 0x%x: %d %d %d %d", (unsigned)lr, (int)ul.userId[0], (int)ul.userId[1], (int)ul.userId[2], (int)ul.userId[3]);
+      for (int i = 0; i < 4 && k < 3; i++) { int id = (int)ul.userId[i]; if (id == -1 || id == userId) continue;
+        int h = scePadOpen(id, 0, 0, NULL); blog("extra pad uid %d -> %d", id, h); if (h >= 0) extraPads[k++] = h; } }
+    static Multi multi;
+    Game& game = multi.lead;
     game.set_threads(1);
     game.renderer().gpu = useGpu;
     load_cfg(game);
@@ -279,21 +288,35 @@ int main(int, char**) {
             ps.l2 = d.analogButtons.l2 / 255.0f;
             ps.r2 = d.analogButtons.r2 / 255.0f;
         }
+        PadState mpads[4]; mpads[0] = ps;
+        for (int k = 0; k < 3; k++) { PadState q; q.down = 0; q.lx = q.ly = q.l2 = q.r2 = 0;
+            if (extraPads[k] >= 0) { OrbisPadData t; memset(&t, 0, sizeof t); scePadReadState(extraPads[k], &t); uint32_t b = t.buttons, o = 0;
+                if (b & ORBIS_PAD_BUTTON_CROSS) o |= B_CROSS; if (b & ORBIS_PAD_BUTTON_CIRCLE) o |= B_CIRCLE; if (b & ORBIS_PAD_BUTTON_SQUARE) o |= B_SQUARE; if (b & ORBIS_PAD_BUTTON_TRIANGLE) o |= B_TRIANGLE;
+                if (b & ORBIS_PAD_BUTTON_L1) o |= B_L1; if (b & ORBIS_PAD_BUTTON_R1) o |= B_R1; if (b & ORBIS_PAD_BUTTON_L3) o |= B_L3; if (b & ORBIS_PAD_BUTTON_R3) o |= B_R3;
+                if (b & ORBIS_PAD_BUTTON_UP) o |= B_UP; if (b & ORBIS_PAD_BUTTON_DOWN) o |= B_DOWN; if (b & ORBIS_PAD_BUTTON_LEFT) o |= B_LEFT; if (b & ORBIS_PAD_BUTTON_RIGHT) o |= B_RIGHT;
+                q.down = o; q.lx = axis_norm(t.leftStick.x); q.ly = axis_norm(t.leftStick.y); q.l2 = t.analogButtons.l2 / 255.0f; q.r2 = t.analogButtons.r2 / 255.0f; }
+            mpads[k + 1] = q; }
         uint32_t now = ticks();
         float dt = fminf(0.05f, (now - last) / 1000.0f);
         last = now;
         uint64_t t0 = sceKernelGetProcessTime();
-        game.update(dt, ps);
+        multi.update(dt, mpads);
         if (game.take_dirty()) save_cfg(game);
-        int w = game.render_w(), h = game.render_h();
+        bool mp = multi.active();
+        int w = mp ? OUT_W : game.render_w(), h = mp ? OUT_H : game.render_h();
         if ((int)fb.size() != w * h) { fb.assign(size_t(w) * h, 0); up_.assign(size_t(w) * h, 0); }
         uint64_t t1 = sceKernelGetProcessTime();
-        game.render(fb.data());
+        static std::vector<std::vector<uint32_t>> mtmp;
+        if (mp) multi.render(fb, mtmp); else game.render(fb.data());
         uint64_t t2 = sceKernelGetProcessTime();
         if (frame == 0) blog("first frame rendered %dx%d", w, h);
         for (size_t i = 0; i < fb.size(); i++) { uint32_t p = fb[i]; up_[i] = (p & 0xFF00FF00u) | ((p >> 16) & 0xFFu) | ((p & 0xFFu) << 16) | (useGpu ? 0u : 0xFF000000u); }  // ARGB -> ABGR bytes (RGBA)
         uint64_t t3 = sceKernelGetProcessTime();
-        if (useGpu) gpuScene(game.renderer(), w, h, frame); else { glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT); }
+        if (useGpu) {
+            if (mp) { glViewport(0, 0, OUT_W, OUT_H); glDisable(GL_SCISSOR_TEST); glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+                      for (int i = 0; i < multi.count; i++) gpuScene(multi.pane(i).renderer(), multi.rect[i].w, multi.rect[i].h, frame, multi.rect[i].x, multi.rect[i].y, multi.rect[i].w, multi.rect[i].h); }
+            else gpuScene(game.renderer(), w, h, frame);
+        } else { glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT); }
         uint64_t t4 = sceKernelGetProcessTime();
         glPresent(up_.data(), w, h);
         uint64_t t5 = sceKernelGetProcessTime();
