@@ -27,6 +27,11 @@ public:
     void set_others(const std::vector<Rival>& o) { others = o; }
     Rival self_info() const { return {s_, d_, speed, 0.0f, car_sel, paint_sel}; }
     int race_serial() const { return race_serial_; }
+    enum { SFX_MOVE = 1, SFX_OK, SFX_BACK, SFX_BEEP, SFX_GO, SFX_FINISH, SFX_CRASH, SFX_SHIFT, SFX_SWAP, SFX_START };
+    int take_sfx() { if (sfx_q.empty()) return 0; int e = sfx_q.front(); sfx_q.erase(sfx_q.begin()); return e; }
+    float throttle() const { return thr_; }
+    float speed_ms() const { return speed; }
+    bool engine_on() const { return !follower && (state == RACE || state == COUNTDOWN || state == FINISH); }
     int mp_players = 1;                                       // menu option: 1 = single player, 2..4 = split screen
     bool take_mp_launch() { bool b = mp_launch; mp_launch = false; return b; }
     void set_quality(int q) { quality = q < 0 ? 0 : (q > 2 ? 2 : q); dirty = true; }
@@ -82,6 +87,10 @@ private:
     float s_ = 0, d_ = 0, yaw_ = 0, speed = 0, race_t = 0, steer_vis = 0, bob_t = 0, shake = 0, braking = 0;
     int place_ = 6;
     float demo_s = 0, spin = 0;
+    std::vector<int> sfx_q;
+    void snd(int e) { if (!follower && sfx_q.size() < 12) sfx_q.push_back(e); }
+    float anim_clock_ = 0, sel_y_ = 0, car_anim_ = 0, thr_ = 0, crash_cd_ = 0, paint_anim_ = 0, stat_vis_[4] = {0.3f, 0.3f, 0.3f, 0.3f};
+    int car_dir_ = 1, last_cd_ = -1, prev_gear_ = 0;
     std::vector<Rival> rivals, others;
     int vp_w = 0, vp_h = 0, race_serial_ = 0; bool follower = false, mp_launch = false;
     float topf = 1, accf = 1, gripf = 1, armf = 1, vmax = 50;

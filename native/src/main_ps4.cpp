@@ -4,6 +4,9 @@
 // GPU init follows the war project's proven path (privileged eboot + Piglet). Built by .github/workflows/ps4-native.yml.
 #include "game.h"
 #include "mp.h"
+#include "audio.h"
+#include <pthread.h>
+#include <orbis/AudioOut.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -210,6 +213,18 @@ static void glPresent(const uint32_t* px, int w, int h) {
     if (pf <= 3) blog("swap ret=%d err=0x%x", (int)sr, (unsigned)eglGetError());
 }
 
+static void* audioThread(void*) {
+    blog("audio: thread start");
+    { int am = sceSysmoduleLoadModuleInternal((decltype(ORBIS_SYSMODULE_INTERNAL_USER_SERVICE))0x80000001); blog("audio: internal AUDIOOUT module 0x%x", (unsigned)am); }
+    int ai = sceAudioOutInit(); blog("audio: init 0x%x", (unsigned)ai);
+    int h = sceAudioOutOpen(ORBIS_USER_SERVICE_USER_ID_SYSTEM, ORBIS_AUDIO_OUT_PORT_TYPE_MAIN, 0, 256, 48000, ORBIS_AUDIO_OUT_PARAM_FORMAT_S16_STEREO);
+    blog("audio: open %d", h);
+    if (h <= 0) return NULL;
+    static int16_t buf[256 * 2];
+    for (;;) { AUD::mix(buf, 256); sceAudioOutOutput(h, buf); }
+    return NULL;
+}
+
 static uint32_t ticks() { return (uint32_t)(sceKernelGetProcessTime() / 1000); }
 
 int main(int, char**) {
@@ -301,6 +316,9 @@ int main(int, char**) {
         last = now;
         uint64_t t0 = sceKernelGetProcessTime();
         multi.update(dt, mpads);
+        { int e; while ((e = game.take_sfx()) != 0) AUD::push(e);
+          AUD::g_rpm.store(game.rpm()); AUD::g_thr.store(game.throttle()); AUD::g_speed.store(game.speed_ms()); AUD::g_skid.store(game.skid()); AUD::g_engine.store(game.engine_on() ? 1.0f : 0.0f);
+          static bool at = false; if (!at && frame == 60) { at = true; pthread_t t; int pr = pthread_create(&t, NULL, audioThread, NULL); blog("audio thread create %d", pr); } }
         if (game.take_dirty()) save_cfg(game);
         bool mp = multi.active();
         int w = mp ? OUT_W : game.render_w(), h = mp ? OUT_H : game.render_h();

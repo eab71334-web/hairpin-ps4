@@ -8,6 +8,8 @@
 #include <cstring>
 
 static const float PI_F = 3.14159265f;
+static inline float eo(float t) { t = t < 0 ? 0 : (t > 1 ? 1 : t); float u = 1 - t; return 1 - u * u * u; }   // ease-out cubic
+static inline float eob(float t) { t = t < 0 ? 0 : (t > 1 ? 1 : t); float u = t - 1; return 1 + 2.2f * u * u * u + 1.2f * u * u; }   // ease-out with a little overshoot
 
 static inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
 static inline float lerpf(float a, float b, float t) { return a + (b - a) * t; }
@@ -218,7 +220,7 @@ void Game::reset_race() {
     apply_car();
     race_serial_++;
     s_ = 0; d_ = 0; yaw_ = 0; speed = 0; race_t = 0; place_ = 6; shake = 0; braking = 0; steer_vis = 0;
-    vy_ = 0; wz_ = 0; steer_ang_ = 0; rpm_ = 1000; gear_ = 0; shift_t_ = 0; skid_ = 0; lat_g_ = 0;
+    vy_ = 0; wz_ = 0; steer_ang_ = 0; rpm_ = 1000; gear_ = 0; shift_t_ = 0; skid_ = 0; lat_g_ = 0; prev_gear_ = 0; last_cd_ = -1;
     rivals.clear();
     const int models[5] = {3, 6, 2, 7, 0}, paints[5] = {1, 4, 5, 6, 12};
     for (int i = 0; i < 5; i++) {
@@ -274,6 +276,17 @@ void Game::update(float dt, const PadState& pad) {
     demo_s += 16.0f * dt;
     spin += dt * 0.5f;
     auto wrap = [](int v, int n) { return (v % n + n) % n; };
+    anim_clock_ += dt; thr_ = 0; crash_cd_ = std::max(0.0f, crash_cd_ - dt);
+    sel_y_ += (menu_sel - sel_y_) * std::min(1.0f, dt * 14.0f);
+    car_anim_ = std::max(0.0f, car_anim_ - dt * 2.0f); paint_anim_ = std::max(0.0f, paint_anim_ - dt * 3.0f);
+    { const CarInfo& ci = CAR_INFO[car_sel];
+      float tg[4] = {(ci.top - 140) / 90.0f, (ci.power - 0.8f) / 0.8f, (ci.grip - 0.8f) / 0.6f, (1.5f - ci.armor) / 0.7f};
+      for (int i = 0; i < 4; i++) stat_vis_[i] += (clampf(tg[i], 0.05f, 1.0f) - stat_vis_[i]) * std::min(1.0f, dt * 7.0f); }
+    if ((state == MENU || state == GARAGE || state == CONTROLS || state == PAUSED) && !capturing) {
+        if (ed & (B_UP | B_DOWN | B_LEFT | B_RIGHT)) snd(SFX_MOVE);
+        if (ed & B_CROSS) snd(SFX_OK);
+        if (ed & B_CIRCLE) snd(SFX_BACK);
+    }
 
     if (state == MENU) {
         const int N = 8;
@@ -281,7 +294,7 @@ void Game::update(float dt, const PadState& pad) {
         if (ed & B_DOWN) menu_sel = wrap(menu_sel + 1, N);
         int dir = ((ed & B_RIGHT) ? 1 : 0) - ((ed & B_LEFT) ? 1 : 0);
         bool ok = (ed & B_CROSS) != 0;
-        if (menu_sel == 0 && ok) { reset_race(); state = COUNTDOWN; state_t = 0; if (mp_players > 1) mp_launch = true; }
+        if (menu_sel == 0 && ok) { reset_race(); state = COUNTDOWN; state_t = 0; if (mp_players > 1) mp_launch = true; snd(SFX_START); last_cd_ = -1; }
         else if (menu_sel == 1 && ok) { state = GARAGE; garage_row = 0; state_t = 0; }
         else if (menu_sel == 2 && ok) { ctl_return = MENU; state = CONTROLS; ctl_sel = 0; capturing = false; }
         else if (menu_sel == 3 && (dir || ok)) { quality = wrap(quality + (dir ? dir : 1), 3); dirty = true; }
@@ -295,7 +308,7 @@ void Game::update(float dt, const PadState& pad) {
         if (ed & (B_UP | B_DOWN)) garage_row = 1 - garage_row;
         int dir = ((ed & B_RIGHT) ? 1 : 0) - ((ed & B_LEFT) ? 1 : 0);
         if (dir) {
-            if (garage_row == 0) car_sel = wrap(car_sel + dir, CAR_MESH_COUNT); else paint_sel = wrap(paint_sel + dir, PAINT_COUNT);
+            if (garage_row == 0) { car_sel = wrap(car_sel + dir, CAR_MESH_COUNT); car_anim_ = 1.0f; car_dir_ = dir; snd(SFX_SWAP); } else { paint_sel = wrap(paint_sel + dir, PAINT_COUNT); paint_anim_ = 1.0f; }
             apply_car(); dirty = true;
         }
         if (ed & (B_CIRCLE | B_CROSS)) { state = MENU; state_t = 0; }
@@ -327,7 +340,13 @@ void Game::update(float dt, const PadState& pad) {
         }
         return;
     }
-    if (state == COUNTDOWN) { if (state_t > 3.0f) { state = RACE; state_t = 0; } return; }
+    if (state == COUNTDOWN) {
+        int n = int(state_t);
+        if (n != last_cd_) { last_cd_ = n; if (n < 3) snd(SFX_BEEP); else snd(SFX_GO); }
+        rpm_ += ((state_t > 2.4f ? 4200.0f : 1000.0f) - rpm_) * std::min(1.0f, dt * 6.0f);
+        if (state_t > 3.0f) { state = RACE; state_t = 0; last_cd_ = -1; }
+        return;
+    }
     if (state == PAUSED) {
         if (ed & B_UP) menu_sel = wrap(menu_sel - 1, 4);
         if (ed & B_DOWN) menu_sel = wrap(menu_sel + 1, 4);
@@ -358,7 +377,9 @@ void Game::update(float dt, const PadState& pad) {
     if (dn & B_RIGHT) steer = 1.0f;
     steer_vis += (steer - steer_vis) * std::min(1.0f, dt * 9.0f);
     braking = (brake > 0.1f || hb) ? 1.0f : 0.0f;
+    thr_ = gas;
     step_car(dt, gas, brake, hb, steer);
+    if (gear_ != prev_gear_) { if (gear_ > prev_gear_) snd(SFX_SHIFT); prev_gear_ = gear_; }
     bob_t += dt * speed * 0.5f;
     // rivals
     int ahead = 0;
@@ -373,12 +394,12 @@ void Game::update(float dt, const PadState& pad) {
         if (fabsf(ds) < 4.6f && fabsf(dd) < 1.9f) {
             speed *= (1.0f - 3.0f * dt * armf);
             d_ += (dd > 0 ? -1.0f : 1.0f) * 3.5f * dt;
-            shake = 0.3f;
+            shake = 0.3f; if (crash_cd_ <= 0) { snd(SFX_CRASH); crash_cd_ = 0.5f; }
         }
     }
     place_ = ahead + 1;
     shake = std::max(0.0f, shake - dt);
-    if (s_ >= world.length() - 20.0f) { state = FINISH; state_t = 0; }
+    if (s_ >= world.length() - 20.0f) { state = FINISH; state_t = 0; snd(SFX_FINISH); }
 }
 
 
@@ -457,7 +478,7 @@ void Game::step_car(float dt, float gas, float brake, bool hb, float steer) {
         if (d_ > 13.0f || d_ < -13.0f) {                                     // barrier: bounce, scrub speed
             float nrm = d_ > 0 ? -1.0f : 1.0f;
             d_ = clampf(d_, -13.0f, 13.0f);
-            vy_ = nrm * fabsf(vy_) * 0.3f; speed *= (1.0f - 2.5f * h); wz_ *= 0.8f; shake = 0.35f;
+            vy_ = nrm * fabsf(vy_) * 0.3f; speed *= (1.0f - 2.5f * h); wz_ *= 0.8f; shake = 0.35f; if (crash_cd_ <= 0) { snd(SFX_CRASH); crash_cd_ = 0.5f; }
         }
     }
     if (off && speed > 16.0f) speed = std::max(16.0f, speed - 6.0f * dt);
@@ -532,7 +553,9 @@ void Game::scene3d(float) {
             uint32_t rc = RARITY_COL[CAR_INFO[car_sel].rarity];
             rend.tri(i0, o0, o1, rc, true, true); rend.tri(i0, o1, i1, rc, true, true);
         }
-        draw_car3d(rend, car_sel, Xf::make(V3(0, 0, 0), 0.0f), pcol, false, 0.0f);
+        { float sl = car_dir_ * car_anim_ * car_anim_ * 9.0f;
+          V3 right(cosf(cam.yaw), 0, -sinf(cam.yaw));
+          draw_car3d(rend, car_sel, Xf::make(right * sl, car_dir_ * car_anim_ * 1.4f), pcol, false, 0.0f); }
         rend.end(fb_);
         return;
     }
@@ -598,23 +621,31 @@ void Game::hud(Cv& c) {
     c.vgrad(0, 0, W, int(130 * S), argb(150, 4, 6, 12), argb(0, 4, 6, 12));
     c.vgrad(0, H - int(170 * S), W, int(170 * S), argb(0, 4, 6, 12), argb(170, 4, 6, 12));
     char b[64];
+    const float hin = state == COUNTDOWN ? eo(state_t / 0.7f) : 1.0f, ho = 1.0f - hin;
+    const float clk = anim_clock_;
     // position
-    c.rrect(26 * S, 22 * S, 190 * S, 84 * S, 10 * S, argb(170, 12, 16, 28), argb(170, 20, 24, 40));
-    c.rrect(26 * S, 22 * S, 7 * S, 84 * S, 3 * S, rgb(255, 120, 30));
-    snprintf(b, sizeof b, "%d", place_);
-    c.text_sh(54 * S, 32 * S, 9.5f * S, rgb(255, 214, 70), b);
-    c.text_sh(112 * S, 62 * S, 4.0f * S, rgb(220, 224, 236), "/ 6");
-    c.text(112 * S, 38 * S, 2.6f * S, rgb(150, 160, 185), "POSITION");
+    { float ox = -ho * 280 * S;
+      c.rrect(26 * S + ox, 22 * S, 190 * S, 84 * S, 12 * S, argb(185, 12, 16, 30), argb(185, 20, 24, 42));
+      c.rrect(26 * S + ox, 22 * S, 7 * S, 84 * S, 3 * S, rgb(255, 120, 30));
+      snprintf(b, sizeof b, "%d", place_);
+      c.text_sh(54 * S + ox, 32 * S, 9.5f * S, place_ == 1 ? rgb(255, 214, 70) : (place_ <= 3 ? rgb(220, 226, 240) : rgb(255, 160, 120)), b);
+      c.text_sh(112 * S + ox, 62 * S, 4.0f * S, rgb(220, 224, 236), "/ 6");
+      c.text(112 * S + ox, 38 * S, 2.6f * S, rgb(150, 160, 185), "POSITION"); }
     // stage + progress
-    c.rrect(W * 0.5f - 190 * S, 22 * S, 380 * S, 62 * S, 14 * S, argb(170, 12, 16, 28), argb(170, 20, 24, 40));
-    c.text_sh(W * 0.5f, 30 * S, 3.2f * S, rgb(255, 255, 255), world.name(), 1);
-    c.rrect(W * 0.5f - 160 * S, 62 * S, 320 * S, 8 * S, 4 * S, rgb(34, 40, 60));
-    c.rrect(W * 0.5f - 160 * S, 62 * S, std::max(8.0f * S, 320 * S * clampf(progress(), 0, 1)), 8 * S, 4 * S, rgb(255, 150, 40), rgb(255, 100, 30));
+    { float oy = -ho * 140 * S;
+      c.rrect(W * 0.5f - 190 * S, 22 * S + oy, 380 * S, 62 * S, 14 * S, argb(185, 12, 16, 30), argb(185, 20, 24, 42));
+      c.text_sh(W * 0.5f, 30 * S + oy, 3.2f * S, rgb(255, 255, 255), world.name(), 1);
+      c.rrect(W * 0.5f - 160 * S, 62 * S + oy, 320 * S, 8 * S, 4 * S, rgb(34, 40, 60));
+      float pw = std::max(8.0f * S, 320 * S * clampf(progress(), 0, 1));
+      c.rrect(W * 0.5f - 160 * S, 62 * S + oy, pw, 8 * S, 4 * S, rgb(255, 150, 40), rgb(255, 100, 30));
+      c.circle(W * 0.5f - 160 * S + pw, 66 * S + oy, 7 * S, rgb(255, 255, 255)); }
     // time
-    snprintf(b, sizeof b, "%d:%02d.%d", int(race_t) / 60, int(race_t) % 60, int(race_t * 10) % 10);
-    c.rrect(W - 236 * S, 22 * S, 210 * S, 84 * S, 10 * S, argb(170, 12, 16, 28), argb(170, 20, 24, 40));
-    c.text(W - 222 * S, 32 * S, 2.6f * S, rgb(150, 160, 185), "TIME");
-    c.text_sh(W - 222 * S, 56 * S, 5.4f * S, rgb(255, 255, 255), b);
+    { float ox = ho * 280 * S;
+      snprintf(b, sizeof b, "%d:%02d.%d", int(race_t) / 60, int(race_t) % 60, int(race_t * 10) % 10);
+      c.rrect(W - 236 * S + ox, 22 * S, 210 * S, 84 * S, 12 * S, argb(185, 12, 16, 30), argb(185, 20, 24, 42));
+      c.rrect(W - 33 * S + ox, 22 * S, 7 * S, 84 * S, 3 * S, rgb(255, 120, 30));
+      c.text(W - 222 * S + ox, 32 * S, 2.6f * S, rgb(150, 160, 185), "TIME");
+      c.text_sh(W - 222 * S + ox, 56 * S, 5.4f * S, rgb(255, 255, 255), b); }
     // hairpin warning
     float ahead = upcoming_curve(60.0f) * 0.5f + upcoming_curve(110.0f) * 0.5f;
     if (fabsf(ahead) > 0.032f && (int(race_t * 4) & 1) == 0) {
@@ -622,34 +653,61 @@ void Game::hud(Cv& c) {
         c.rrect(cx - 200 * S, cy - 34 * S, 400 * S, 68 * S, 12 * S, argb(215, 200, 24, 30), argb(215, 140, 10, 20));
         c.text_sh(cx, cy - 14 * S, 4.6f * S, rgb(255, 255, 255), ahead < 0 ? "SHARP RIGHT >>" : "<< SHARP LEFT", 1);
     }
-    // speedometer
-    float gx = W - 190 * S, gy = H - 170 * S, gr = 124 * S;
-    float a0 = 0.75f * PI_F, a1 = 2.25f * PI_F, kmh = speed_kmh(), f = clampf(kmh / 240.0f, 0.0f, 1.0f);
-    c.circle(gx, gy, gr + 14 * S, argb(170, 10, 12, 22));
-    c.ring(gx, gy, gr - 16 * S, gr, a0, a1, argb(255, 36, 42, 62));
-    if (f > 0.005f) {
-        uint32_t col = f < 0.6f ? mixc(rgb(90, 190, 255), rgb(255, 170, 50), f / 0.6f) : mixc(rgb(255, 170, 50), rgb(255, 50, 50), (f - 0.6f) / 0.4f);
-        c.ring(gx, gy, gr - 16 * S, gr, a0, a0 + (a1 - a0) * f, col);
+    float kmh = speed_kmh();
+    const float rf = clampf((rpm_ - 1000.0f) / 6200.0f, 0.0f, 1.0f);
+    const int gearn = gear_ + 1;
+    const float oyb = ho * 260 * S;
+    if (fpv) {
+        // in-car digital dash: speed, gear and an LED shift bar (the wheel gauges are drawn by the car itself)
+        float dw = 330 * S, dx = W * 0.5f - dw * 0.5f, dy = H - 128 * S + oyb;
+        c.rrect(dx, dy, dw, 100 * S, 16 * S, argb(170, 6, 8, 16), argb(170, 14, 16, 28));
+        c.rrect(dx, dy, dw, 4 * S, 2 * S, rgb(255, 120, 30));
+        const int NL = 16;
+        for (int i = 0; i < NL; i++) {
+            float u = float(i) / NL; bool on = rf > u + 0.02f;
+            uint32_t col = u < 0.55f ? rgb(60, 220, 120) : (u < 0.8f ? rgb(255, 190, 50) : rgb(255, 60, 60));
+            if (rf > 0.93f && (int(clk * 14) & 1)) on = true, col = rgb(255, 70, 70);
+            c.rrect(dx + 18 * S + i * ((dw - 36 * S) / NL), dy + 12 * S, (dw - 36 * S) / NL - 3 * S, 9 * S, 3 * S, on ? col : rgb(30, 36, 52));
+        }
+        snprintf(b, sizeof b, "%d", int(kmh));
+        c.text_sh(dx + 28 * S, dy + 32 * S, 8.0f * S, rgb(255, 255, 255), b);
+        c.text(dx + 28 * S + 4 * S, dy + 32 * S + 58 * S, 2.6f * S, rgb(255, 150, 60), "KM/H");
+        snprintf(b, sizeof b, "%d", gearn);
+        c.rrect(dx + dw - 86 * S, dy + 32 * S, 62 * S, 56 * S, 12 * S, rgb(30, 36, 56));
+        c.text_sh(dx + dw - 55 * S, dy + 38 * S, 6.0f * S, rgb(255, 214, 90), b, 1);
+        c.text(dx + dw - 55 * S, dy + 22 * S + 62 * S, 1.8f * S, rgb(150, 160, 185), "GEAR", 1);
+    } else {
+        // speedometer with an inner RPM arc
+        float gx = W - 190 * S, gy = H - 170 * S + oyb, gr = 124 * S;
+        float a0 = 0.75f * PI_F, a1 = 2.25f * PI_F, f = clampf(kmh / 240.0f, 0.0f, 1.0f);
+        c.circle(gx, gy, gr + 14 * S, argb(185, 8, 10, 20));
+        c.ring(gx, gy, gr - 16 * S, gr, a0, a1, argb(255, 36, 42, 62));
+        if (f > 0.005f) {
+            uint32_t col = f < 0.6f ? mixc(rgb(90, 190, 255), rgb(255, 170, 50), f / 0.6f) : mixc(rgb(255, 170, 50), rgb(255, 50, 50), (f - 0.6f) / 0.4f);
+            c.ring(gx, gy, gr - 16 * S, gr, a0, a0 + (a1 - a0) * f, col);
+        }
+        c.ring(gx, gy, gr - 30 * S, gr - 24 * S, a0, a1, argb(255, 30, 36, 54));
+        if (rf > 0.01f) c.ring(gx, gy, gr - 30 * S, gr - 24 * S, a0, a0 + (a1 - a0) * rf, rf > 0.86f ? rgb(255, 60, 60) : rgb(120, 230, 160));
+        for (int i = 0; i <= 12; i++) {
+            float a = a0 + (a1 - a0) * i / 12.0f, ca = cosf(a), sa = sinf(a);
+            c.line(gx + ca * (gr + 4 * S), gy + sa * (gr + 4 * S), gx + ca * (gr + 9 * S), gy + sa * (gr + 9 * S), (i % 2 ? 1.5f : 2.5f) * S, rgb(190, 198, 220));
+        }
+        snprintf(b, sizeof b, "%d", int(kmh));
+        c.text_sh(gx, gy - 30 * S, 10.0f * S, rgb(255, 255, 255), b, 1);
+        c.text(gx, gy + 40 * S, 3.0f * S, rgb(255, 150, 60), "KM/H", 1);
+        snprintf(b, sizeof b, "%d", gearn);
+        c.rrect(gx - 22 * S, gy + 64 * S, 44 * S, 38 * S, 9 * S, rgb(34, 40, 60));
+        c.text_sh(gx, gy + 69 * S, 4.0f * S, rgb(255, 214, 90), b, 1);
     }
-    for (int i = 0; i <= 12; i++) {
-        float a = a0 + (a1 - a0) * i / 12.0f, ca = cosf(a), sa = sinf(a);
-        c.line(gx + ca * (gr - 26 * S), gy + sa * (gr - 26 * S), gx + ca * (gr - 20 * S), gy + sa * (gr - 20 * S), (i % 2 ? 1.5f : 2.5f) * S, rgb(190, 198, 220));
-    }
-    snprintf(b, sizeof b, "%d", int(kmh));
-    c.text_sh(gx, gy - 30 * S, 10.0f * S, rgb(255, 255, 255), b, 1);
-    c.text(gx, gy + 40 * S, 3.0f * S, rgb(255, 150, 60), "KM/H", 1);
-    int gear = std::max(1, std::min(6, 1 + int(kmh / 38.0f)));
-    snprintf(b, sizeof b, "%d", gear);
-    c.rrect(gx - 20 * S, gy + 66 * S, 40 * S, 34 * S, 8 * S, rgb(34, 40, 60));
-    c.text(gx, gy + 71 * S, 3.6f * S, rgb(255, 255, 255), b, 1);
     // minimap
-    float mx = 36 * S, my = H - 214 * S, ms = 170 * S;
-    c.rrect(mx - 12 * S, my - 12 * S, ms + 24 * S, ms + 24 * S, 14 * S, argb(165, 10, 14, 26));
+    float mx = 36 * S - ho * 280 * S, my = H - 214 * S, ms = 170 * S;
+    c.rrect(mx - 12 * S, my - 12 * S, ms + 24 * S, ms + 24 * S, 16 * S, argb(175, 10, 14, 28));
     int np = (int)mm_x.size();
     for (int i = 0; i + 1 < np; i++) c.line(mx + mm_x[i] * ms, my + mm_y[i] * ms, mx + mm_x[i + 1] * ms, my + mm_y[i + 1] * ms, 4.5f * S, rgb(70, 78, 104));
     auto at = [&](float sm, float& x, float& y) { int i = int(sm / 15.0f); if (i < 0) i = 0; if (i >= np) i = np - 1; x = mx + mm_x[i] * ms; y = my + mm_y[i] * ms; };
     for (auto& r : rivals) { float x, y; at(r.s, x, y); c.circle(x, y, 4.5f * S, rgb(PAINTS[r.paint].r, PAINTS[r.paint].g, PAINTS[r.paint].b)); }
-    { float x, y; at(s_, x, y); c.circle(x, y, 8 * S, argb(130, 255, 255, 255)); c.circle(x, y, 5.5f * S, rgb(255, 60, 70)); }
+    for (auto& r : others) { float x, y; at(r.s, x, y); c.circle(x, y, 5.5f * S, rgb(PAINTS[r.paint].r, PAINTS[r.paint].g, PAINTS[r.paint].b)); c.ring(x, y, 5.5f * S, 7.5f * S, 0, 2 * PI_F, rgb(255, 255, 255)); }
+    { float x, y; at(s_, x, y); float pu = 1.0f + 0.25f * sinf(clk * 6.0f); c.circle(x, y, 8 * S * pu, argb(130, 255, 255, 255)); c.circle(x, y, 5.5f * S, rgb(255, 60, 70)); }
     // speed streaks
     if (kmh > 130) {
         int cnt = 14;
@@ -674,37 +732,55 @@ void Game::garage_screen(Cv& c) {
     const int W = c.W, H = c.H;
     const float S = c.S;
     const CarInfo& ci = CAR_INFO[car_sel];
-    c.text_sh(90 * S, 52 * S, 8.0f * S, rgb(255, 255, 255), "GARAGE");
-    c.rrect(84 * S, 52 * S + 64 * S, 120 * S, 5 * S, 2 * S, rgb(255, 120, 30));
-    float cx = W * 0.62f;
+    const float T = state_t, clk = anim_clock_;
     char b[64];
-    snprintf(b, sizeof b, "< %s >", ci.name);
-    float ry = H * 0.665f;
-    c.rrect(cx - 330 * S, ry, 660 * S, 50 * S, 12 * S, garage_row == 0 ? rgb(255, 130, 34) : argb(170, 18, 22, 38), garage_row == 0 ? rgb(214, 70, 24) : argb(170, 28, 32, 52));
-    c.text_sh(cx, ry + 11 * S, 3.8f * S, rgb(255, 255, 255), b, 1);
-    snprintf(b, sizeof b, "< %s >", PAINTS[paint_sel].name);
-    c.rrect(cx - 330 * S, ry + 58 * S, 660 * S, 50 * S, 12 * S, garage_row == 1 ? rgb(255, 130, 34) : argb(170, 18, 22, 38), garage_row == 1 ? rgb(214, 70, 24) : argb(170, 28, 32, 52));
-    c.text_sh(cx, ry + 69 * S, 3.8f * S, rgb(255, 255, 255), b, 1);
-    c.circle(cx - 300 * S, ry + 83 * S, 14 * S, rgb(PAINTS[paint_sel].r, PAINTS[paint_sel].g, PAINTS[paint_sel].b));
-    c.text_sh(cx, ry - 26 * S, 2.8f * S, uint32_t(RARITY_COL[ci.rarity]), RARITY_NAME[ci.rarity], 1);
-    // stats (left panel)
-    float sx = 90 * S, sy = 200 * S;
-    c.rrect(sx - 20 * S, sy - 16 * S, 420 * S, 232 * S, 14 * S, argb(165, 12, 16, 28));
+    c.rect(0, 0, W, H, argb(60, 4, 6, 14));
+    c.vgrad(0, 0, W, int(150 * S), argb(200, 0, 0, 0), argb(0, 0, 0, 0));
+    c.vgrad(0, H - int(300 * S), W, int(300 * S), argb(0, 0, 0, 0), argb(225, 0, 0, 0));
+    float te = eo(T / 0.5f);
+    c.text_sh(90 * S + (1 - te) * -300 * S, 52 * S, 8.0f * S, argb(int(255 * te), 255, 255, 255), "GARAGE");
+    c.rrect(84 * S, 52 * S + 64 * S, 120 * S * te, 5 * S, 2 * S, rgb(255, 120, 30));
+    // stats card (slides in from the left)
+    float se = eo((T - 0.1f) / 0.55f), sx = 90 * S + (1 - se) * -480 * S, sy = 200 * S;
+    c.rrect(sx - 20 * S, sy - 16 * S, 430 * S, 300 * S, 16 * S, argb(185, 12, 16, 30), argb(185, 8, 10, 20));
+    c.rrect(sx - 20 * S, sy - 16 * S, 6 * S, 300 * S, 3 * S, uint32_t(RARITY_COL[ci.rarity]));
     const char* nm[4] = {"TOP SPEED", "POWER", "GRIP", "ARMOR"};
-    float val[4] = {(ci.top - 140) / 90.0f, (ci.power - 0.8f) / 0.8f, (ci.grip - 0.8f) / 0.6f, (1.5f - ci.armor) / 0.7f};
     for (int i = 0; i < 4; i++) {
-        float y = sy + i * 52 * S;
+        float y = sy + i * 54 * S;
         c.text(sx, y, 2.8f * S, rgb(160, 170, 195), nm[i]);
         c.rrect(sx, y + 26 * S, 380 * S, 12 * S, 6 * S, rgb(30, 36, 54));
-        c.rrect(sx, y + 26 * S, std::max(12.0f * S, 380 * S * clampf(val[i], 0.05f, 1.0f)), 12 * S, 6 * S, rgb(255, 170, 50), rgb(255, 110, 30));
+        c.rrect(sx, y + 26 * S, std::max(12.0f * S, 380 * S * stat_vis_[i]), 12 * S, 6 * S, rgb(255, 170, 50), rgb(255, 110, 30));
+        c.rect(int(sx + 380 * S * stat_vis_[i] - 2 * S), int(y + 24 * S), int(3 * S), int(16 * S), argb(160, 255, 255, 255));
     }
     snprintf(b, sizeof b, "%d KM/H", int(ci.top));
     c.text_sh(sx + 380 * S, sy, 2.8f * S, rgb(255, 255, 255), b, 2);
-    // paint swatches
+    c.text(sx, sy + 228 * S, 2.4f * S, rgb(150, 160, 185), "RARITY");
+    c.text_sh(sx + 380 * S, sy + 226 * S, 3.0f * S, uint32_t(RARITY_COL[ci.rarity]), RARITY_NAME[ci.rarity], 2);
+    // car title with swap animation
+    float cx = W * 0.62f, slide = car_dir_ * car_anim_ * car_anim_ * 260 * S;
+    int al = int(255 * (1.0f - car_anim_ * 0.9f));
+    snprintf(b, sizeof b, "%02d / %02d", car_sel + 1, CAR_MESH_COUNT);
+    c.text(cx, 56 * S, 2.8f * S, argb(al, 150, 160, 185), b, 1);
+    c.text_sh(cx + slide, 82 * S, 6.0f * S, argb(al, 255, 255, 255), ci.name, 1);
+    // selector rows
+    float re = eo((T - 0.25f) / 0.5f), ry = H * 0.665f + (1 - re) * 140 * S;
+    float arrow = 6 * S * sinf(clk * 7.0f);
+    for (int r = 0; r < 2; r++) {
+        float y = ry + r * 58 * S; bool sel = garage_row == r;
+        c.rrect(cx - 330 * S, y, 660 * S, 50 * S, 12 * S, sel ? rgb(255, 130, 34) : argb(175, 18, 22, 38), sel ? rgb(214, 70, 24) : argb(175, 28, 32, 52));
+        if (sel) c.rrect(cx - 338 * S, y - 4 * S, 676 * S, 58 * S, 16 * S, argb(int(30 + 25 * sinf(clk * 5.0f)), 255, 140, 40));
+        c.text_sh(cx - 300 * S + (sel ? -arrow : 0), y + 11 * S, 3.8f * S, rgb(255, 255, 255), "<");
+        c.text_sh(cx + 300 * S - 22 * S + (sel ? arrow : 0), y + 11 * S, 3.8f * S, rgb(255, 255, 255), ">");
+        c.text_sh(cx, y + 11 * S, 3.8f * S, rgb(255, 255, 255), r == 0 ? ci.name : PAINTS[paint_sel].name, 1);
+    }
+    c.circle(cx - 260 * S, ry + 83 * S, 14 * S, rgb(PAINTS[paint_sel].r, PAINTS[paint_sel].g, PAINTS[paint_sel].b));
+    c.text_sh(cx, ry - 30 * S, 2.8f * S, uint32_t(RARITY_COL[ci.rarity]), RARITY_NAME[ci.rarity], 1);
+    // paint swatches (selected one pops)
     for (int i = 0; i < PAINT_COUNT; i++) {
-        float px0 = cx + (i - (PAINT_COUNT - 1) * 0.5f) * 40 * S, py0 = H * 0.865f;
-        c.circle(px0, py0, 14 * S, rgb(PAINTS[i].r, PAINTS[i].g, PAINTS[i].b));
-        if (i == paint_sel) c.ring(px0, py0, 17 * S, 21 * S, 0, 2 * PI_F, rgb(255, 255, 255));
+        float px0 = cx + (i - (PAINT_COUNT - 1) * 0.5f) * 40 * S, py0 = H * 0.865f + (1 - re) * 100 * S;
+        float pop = (i == paint_sel) ? 1.0f + 0.35f * eob(1.0f - paint_anim_) : 1.0f;
+        c.circle(px0, py0, 13 * S * pop, rgb(PAINTS[i].r, PAINTS[i].g, PAINTS[i].b));
+        if (i == paint_sel) c.ring(px0, py0, 16 * S * pop, 20 * S * pop, 0, 2 * PI_F, rgb(255, 255, 255));
     }
     prompt(c, 90 * S, H - 62 * S, B_LEFT, "CHANGE", S);
     prompt(c, 330 * S, H - 62 * S, B_UP, "ROW", S);
@@ -717,17 +793,32 @@ void Game::overlay(Cv& c) {
     char b[64];
     if (state == GARAGE) { garage_screen(c); return; }
     bool menu_like = state == MENU || state == PAUSED || state == CONTROLS;
+    const float clk = anim_clock_;
+    auto band = [&](float x0, float slope, float wd, uint32_t col) {          // skewed light band
+        for (int y = 0; y < H; y += 2) c.rect(int(x0 + slope * y), y, int(wd), 2, col);
+    };
     if (menu_like) {
-        c.rect(0, 0, W, H, argb(state == MENU ? 120 : 175, 6, 8, 16));
-        c.vgrad(0, 0, W, H, argb(70, 255, 110, 30), argb(0, 255, 110, 30));
+        c.rect(0, 0, W, H, argb(state == MENU ? 130 : 175, 5, 7, 15));
+        c.vgrad(0, 0, W, H, argb(80, 255, 110, 30), argb(0, 255, 110, 30));
+        for (int i = 0; i < 4; i++) {                                              // drifting speed bands
+            float x = fmodf(clk * (40 + i * 17) + i * W * 0.31f, W * 1.5f) - W * 0.25f;
+            band(x, 0.38f, (24 + i * 12) * S, argb(9 + i * 2, 255, 150, 60));
+        }
+        c.vgrad(0, 0, W, int(130 * S), argb(190, 0, 0, 0), argb(0, 0, 0, 0));      // letterbox shading
+        c.vgrad(0, H - int(150 * S), W, int(150 * S), argb(0, 0, 0, 0), argb(200, 0, 0, 0));
     }
     if (state == MENU || state == PAUSED) {
         const char* title = state == MENU ? "HAIRPIN RUSH" : "PAUSED";
         float sc = state == MENU ? 12.0f * S : 10.0f * S;
-        c.rrect(70 * S, 96 * S, 8 * S, 100 * S, 3 * S, rgb(255, 120, 30));
-        c.text(98 * S + 5 * S, 100 * S + 5 * S, sc, argb(140, 255, 90, 20), title);
-        c.text(98 * S, 100 * S, sc, rgb(255, 255, 255), title);
-        c.text(100 * S, 100 * S + 7 * sc + 12 * S, 3.2f * S, rgb(255, 170, 90), state == MENU ? "SABAK STUDIOS  -  PS4 EDITION" : "RACE IN PROGRESS");
+        float T = state_t, te = eo(T / 0.55f);
+        int ta = int(255 * te);
+        float tx = (1 - te) * -240 * S;
+        c.rrect(70 * S + tx, 96 * S, 8 * S, 100 * S * te, 3 * S, rgb(255, 120, 30));
+        c.text(98 * S + 5 * S + tx, 100 * S + 5 * S, sc, argb(int(140 * te), 255, 90, 20), title);
+        c.text(98 * S + tx, 100 * S, sc, argb(ta, 255, 255, 255), title);
+        float shine = fmodf(clk * 0.35f, 1.6f) - 0.3f;                              // light sweep over the title
+        if (shine > 0 && shine < 1) { float w0 = c.text_w(title, sc); c.rect(int(98 * S + w0 * shine), int(100 * S), int(26 * S), int(7 * sc), argb(40, 255, 255, 255)); }
+        c.text(100 * S + tx, 100 * S + 7 * sc + 12 * S, 3.2f * S, argb(ta, 255, 170, 90), state == MENU ? "SABAK STUDIOS  -  PS4 EDITION" : "RACE IN PROGRESS");
         const char* mi[8]; char qb[40], lb[40], mb[48];
         static const char* QN[3] = {"540P  (FASTEST)", "720P  (BALANCED)", "1080P  (SHARPEST)"};
         int n;
@@ -738,12 +829,47 @@ void Game::overlay(Cv& c) {
             if (mp_players == 1) snprintf(mb, sizeof mb, "SPLIT SCREEN:  < OFF >"); else snprintf(mb, sizeof mb, "SPLIT SCREEN:  < %d PLAYERS >", mp_players);
             mi[7] = mb; n = 8;
         } else { mi[0] = "RESUME"; mi[1] = "RESTART"; mi[2] = "CONTROLS"; mi[3] = "MAIN MENU"; n = 4; }
-        float y0 = 246 * S;
+        float y0 = 246 * S, IH = 50 * S;
+        float pulse = 0.5f + 0.5f * sinf(clk * 5.0f);
+        for (int i = 0; i < n; i++) {                                              // base rows (staggered slide-in)
+            float e = eo((T - 0.18f - i * 0.07f) / 0.45f), y = y0 + i * IH, x = 90 * S + (1 - e) * -460 * S;
+            c.rrect(x, y, 600 * S, 42 * S, 12 * S, argb(int(165 * e), 16, 20, 36), argb(int(165 * e), 26, 30, 50));
+        }
+        {   // moving highlight
+            float e = eo((T - 0.18f) / 0.45f);
+            float hy = y0 + sel_y_ * IH, hx = 90 * S + 16 * S + (1 - e) * -460 * S;
+            c.rrect(hx - 10 * S, hy - 6 * S, 620 * S, 54 * S, 16 * S, argb(int((28 + 30 * pulse) * e), 255, 140, 40));
+            c.rrect(hx, hy, 600 * S, 42 * S, 12 * S, rgb(255, 140, 38), rgb(222, 74, 24));
+            c.rrect(hx - 10 * S, hy + 6 * S, 5 * S, 30 * S, 2 * S, rgb(255, 232, 130));
+            c.rect(int(hx + 14 * S), int(hy + 3 * S), int(572 * S), int(2 * S), argb(70, 255, 255, 255));
+        }
         for (int i = 0; i < n; i++) {
-            float y = y0 + i * 50 * S, sel = (i == menu_sel) ? 1.0f : 0.0f, x = 90 * S + sel * 14 * S;
-            c.rrect(x, y, 600 * S, 42 * S, 12 * S, sel ? rgb(255, 130, 34) : argb(170, 18, 22, 38), sel ? rgb(214, 70, 24) : argb(170, 28, 32, 52));
-            if (sel) c.rrect(x - 8 * S, y + 6 * S, 5 * S, 30 * S, 2 * S, rgb(255, 230, 120));
-            c.text_sh(x + 28 * S, y + 10 * S, 3.4f * S, sel ? rgb(255, 255, 255) : rgb(200, 208, 228), mi[i]);
+            float e = eo((T - 0.18f - i * 0.07f) / 0.45f), y = y0 + i * IH;
+            float prox = 1.0f - clampf(fabsf(i - sel_y_), 0.0f, 1.0f);
+            float x = 90 * S + (1 - e) * -460 * S + prox * 16 * S;
+            uint32_t col = mixc(rgb(196, 204, 226), rgb(255, 255, 255), prox);
+            c.text_sh(x + 28 * S, y + 10 * S, 3.4f * S, (col & 0x00FFFFFFu) | (uint32_t(int(255 * e)) << 24), mi[i]);
+        }
+        if (state == MENU) {   // right-hand "your ride" card
+            float e = eob((T - 0.35f) / 0.6f);
+            float cw = 410 * S, cx0 = W - cw - 70 * S + (1 - e) * 520 * S, cy0 = 246 * S;
+            const CarInfo& ci = CAR_INFO[car_sel];
+            c.rrect(cx0, cy0, cw, 330 * S, 18 * S, argb(190, 14, 18, 32), argb(190, 8, 10, 20));
+            c.rrect(cx0, cy0, cw, 6 * S, 3 * S, uint32_t(RARITY_COL[ci.rarity]));
+            c.text(cx0 + 26 * S, cy0 + 24 * S, 2.6f * S, rgb(150, 160, 185), "YOUR RIDE");
+            c.text_sh(cx0 + 26 * S, cy0 + 52 * S, 3.6f * S, rgb(255, 255, 255), ci.name);
+            c.text(cx0 + 26 * S, cy0 + 92 * S, 2.8f * S, uint32_t(RARITY_COL[ci.rarity]), RARITY_NAME[ci.rarity]);
+            c.circle(cx0 + cw - 44 * S, cy0 + 100 * S, 12 * S, rgb(PAINTS[paint_sel].r, PAINTS[paint_sel].g, PAINTS[paint_sel].b));
+            c.ring(cx0 + cw - 44 * S, cy0 + 100 * S, 15 * S, 18 * S, clk * 2.0f, clk * 2.0f + 4.2f, rgb(255, 255, 255));
+            const char* nm[4] = {"SPEED", "POWER", "GRIP", "ARMOR"};
+            for (int i = 0; i < 4; i++) {
+                float yy = cy0 + 134 * S + i * 36 * S;
+                c.text(cx0 + 26 * S, yy, 2.4f * S, rgb(160, 170, 195), nm[i]);
+                c.rrect(cx0 + 120 * S, yy + 2 * S, 260 * S, 10 * S, 5 * S, rgb(30, 36, 54));
+                c.rrect(cx0 + 120 * S, yy + 2 * S, std::max(10.0f * S, 260 * S * stat_vis_[i] * e), 10 * S, 5 * S, rgb(255, 170, 50), rgb(255, 110, 30));
+            }
+            c.text(cx0 + 26 * S, cy0 + 288 * S, 2.4f * S, rgb(150, 160, 185), "STAGE");
+            c.text_sh(cx0 + cw - 26 * S, cy0 + 286 * S, 3.0f * S, rgb(255, 214, 120), STAGES[stage_sel].name, 2);
         }
         prompt(c, 90 * S, H - 62 * S, B_CROSS, "SELECT", S);
         prompt(c, 330 * S, H - 62 * S, B_UP, "MOVE", S);
@@ -783,11 +909,17 @@ void Game::overlay(Cv& c) {
         for (int i = 0; i < 3; i++) {                                              // start lights
             bool on = i < (3 - n) + 1 && n >= 1;
             c.circle(W * 0.5f + (i - 1) * 90 * S, 150 * S, 30 * S, on ? rgb(255, 40, 30) : rgb(50, 20, 22));
-            if (on) c.circle(W * 0.5f + (i - 1) * 90 * S, 150 * S, 44 * S, argb(60, 255, 40, 30));
+            if (on) c.circle(W * 0.5f + (i - 1) * 90 * S, 150 * S, 44 * S + 8 * S * (1 - frac), argb(int(60 * (1 - frac) + 30), 255, 40, 30));
         }
         snprintf(b, sizeof b, "%d", n);
-        float sc = (22.0f + (1.0f - frac) * 8.0f) * S;
-        c.text_sh(W * 0.5f, H * 0.5f - 3.5f * sc, sc, rgb(255, 232, 90), b, 1);
+        float pop = eob(frac / 0.35f);
+        float sc = (14.0f + 12.0f * pop) * S;
+        c.ring(W * 0.5f, H * 0.5f, 150 * S * (0.6f + frac), 156 * S * (0.6f + frac), 0, 2 * PI_F, argb(int(120 * (1 - frac)), 255, 200, 80));
+        c.text_sh(W * 0.5f, H * 0.5f - 3.5f * sc, sc, argb(int(255 * (1 - frac * 0.5f)), 255, 232, 90), b, 1);
+    } else if (state == RACE && state_t < 1.0f) {
+        float e = eob(state_t / 0.3f), al = state_t < 0.6f ? 1.0f : 1.0f - (state_t - 0.6f) / 0.4f;
+        float sc = 16.0f * S * e;
+        c.text_sh(W * 0.5f, H * 0.42f - 3.5f * sc, sc, argb(int(255 * al), 90, 255, 130), "GO!", 1);
     } else if (state == FINISH) {
         float pw = 700 * S, ph = 380 * S, x0 = (W - pw) * 0.5f, y0 = (H - ph) * 0.5f - 20 * S;
         c.rect(0, 0, W, H, argb(120, 4, 6, 12));

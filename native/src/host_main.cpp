@@ -33,6 +33,7 @@ static void tap(Game& g, uint32_t bits) {         // one frame pressed, one rele
 int main(int argc, char** argv) {
     const char* out = argc > 1 ? argv[1] : nullptr;
     Game g;
+    for (int i = 0; i < 90; i++) g.update(1 / 60.0f, PadState());
     shot(g, out, "menu");
     // --- menu: go to CONTROLS, remap ACCELERATE (R2) -> L1, expect swap-free change
     // garage first: choose car 3 and paint 4 (second row)
@@ -42,6 +43,7 @@ int main(int argc, char** argv) {
     CHECK(g.state == Game::GARAGE, "menu: GARAGE opens");
     tap(g, B_RIGHT); tap(g, B_RIGHT); tap(g, B_RIGHT);
     CHECK(g.car_sel == 3, "garage: car selection changes");
+    for (int i = 0; i < 90; i++) g.update(1 / 60.0f, PadState());
     shot(g, out, "garage");
     tap(g, B_DOWN); for (int i = 0; i < 4; i++) tap(g, B_RIGHT);
     CHECK(g.paint_sel == 4, "garage: paint selection changes");
