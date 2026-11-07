@@ -165,24 +165,27 @@ static void gpuScene(Renderer& r, int w, int h, int frame) {
       static const float ID[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
       static const float Q[] = {-1, -1, 0, 0, 1, 1, -1, 0, 1, 1, 1, 1, 0, 1, 0, -1, -1, 0, 0, 1, 1, 1, 0, 1, 0, -1, 1, 0, 0, 0};
       glDisable(GL_DEPTH_TEST); gpuDraw(Q, 6, ID); }
-    // triangles
-    const std::vector<float>& gv = r.gpu_verts(); size_t nv = gv.size() / 5;
-    static std::vector<float> sorted;
-    const float* src = gv.data();
-    if (gDepthBits > 0) { glEnable(GL_DEPTH_TEST); glDepthFunc(GL_LEQUAL); }
-    else {                                                              // no depth buffer: painter's algorithm, far to near
-        glDisable(GL_DEPTH_TEST);
-        const std::vector<float>& gz = r.gpu_depth(); size_t nt = gz.size();
-        static std::vector<uint32_t> ord; ord.resize(nt); for (size_t i = 0; i < nt; i++) ord[i] = (uint32_t)i;
-        std::sort(ord.begin(), ord.end(), [&](uint32_t a, uint32_t b) { return gz[a] > gz[b]; });
-        sorted.resize(gv.size()); for (size_t i = 0; i < nt; i++) memcpy(&sorted[i * 15], &gv[(size_t)ord[i] * 15], 15 * sizeof(float));
-        src = sorted.data();
-    }
-    float f = r.focal(), n = 0.15f, fa = 1500.f; float P[16] = {0};
-    P[0] = 2.f * f / w; P[5] = 2.f * f / h; P[10] = (fa + n) / (n - fa); P[11] = -1; P[14] = 2.f * fa * n / (n - fa);
+    // triangles: layer 0 = world, layer 1 = cockpit/hands (depth cleared, tighter near/far so they never z-fight)
+    if (gDepthBits > 0) { glEnable(GL_DEPTH_TEST); glDepthFunc(GL_LEQUAL); } else glDisable(GL_DEPTH_TEST);
     glBindTexture(GL_TEXTURE_2D, gpPal);
-    gpuDraw(src, nv, P);
-    if (frame < 3 || frame % 600 == 0) blog("gpuScene %d tris %d err=0x%x", frame, (int)(nv / 3), (unsigned)glGetError());
+    static std::vector<float> sorted;
+    for (int layer = 0; layer < 2; layer++) {
+        const std::vector<float>& gv = r.gpu_verts(layer); size_t nv = gv.size() / 5;
+        if (!nv) continue;
+        const float* src = gv.data();
+        if (gDepthBits > 0) { if (layer == 1) glClear(GL_DEPTH_BUFFER_BIT); }
+        else {                                                          // no depth buffer: painter's algorithm, far to near
+            const std::vector<float>& gz = r.gpu_depth(layer); size_t nt = gz.size();
+            static std::vector<uint32_t> ord; ord.resize(nt); for (size_t i = 0; i < nt; i++) ord[i] = (uint32_t)i;
+            std::sort(ord.begin(), ord.end(), [&](uint32_t a, uint32_t b) { return gz[a] > gz[b]; });
+            sorted.resize(gv.size()); for (size_t i = 0; i < nt; i++) memcpy(&sorted[i * 15], &gv[(size_t)ord[i] * 15], 15 * sizeof(float));
+            src = sorted.data();
+        }
+        float f = r.focal(), n = layer ? 0.04f : 0.2f, fa = layer ? 40.f : 900.f; float P[16] = {0};
+        P[0] = 2.f * f / w; P[5] = 2.f * f / h; P[10] = (fa + n) / (n - fa); P[11] = -1; P[14] = 2.f * fa * n / (n - fa);
+        gpuDraw(src, nv, P);
+        if (frame < 3 || frame % 600 == 0) blog("gpuScene %d layer %d tris %d err=0x%x", frame, layer, (int)(nv / 3), (unsigned)glGetError());
+    }
     for (int i = 0; i < 8; i++) glDisableVertexAttribArray(i);
 }
 
@@ -279,15 +282,24 @@ int main(int, char**) {
         uint32_t now = ticks();
         float dt = fminf(0.05f, (now - last) / 1000.0f);
         last = now;
+        uint64_t t0 = sceKernelGetProcessTime();
         game.update(dt, ps);
         if (game.take_dirty()) save_cfg(game);
         int w = game.render_w(), h = game.render_h();
         if ((int)fb.size() != w * h) { fb.assign(size_t(w) * h, 0); up_.assign(size_t(w) * h, 0); }
+        uint64_t t1 = sceKernelGetProcessTime();
         game.render(fb.data());
+        uint64_t t2 = sceKernelGetProcessTime();
         if (frame == 0) blog("first frame rendered %dx%d", w, h);
         for (size_t i = 0; i < fb.size(); i++) { uint32_t p = fb[i]; up_[i] = (p & 0xFF00FF00u) | ((p >> 16) & 0xFFu) | ((p & 0xFFu) << 16) | (useGpu ? 0u : 0xFF000000u); }  // ARGB -> ABGR bytes (RGBA)
+        uint64_t t3 = sceKernelGetProcessTime();
         if (useGpu) gpuScene(game.renderer(), w, h, frame); else { glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT); }
+        uint64_t t4 = sceKernelGetProcessTime();
         glPresent(up_.data(), w, h);
+        uint64_t t5 = sceKernelGetProcessTime();
+        { static double a[5] = {0, 0, 0, 0, 0}; static int n = 0;
+          a[0] += (t1 - t0) / 1000.0; a[1] += (t2 - t1) / 1000.0; a[2] += (t3 - t2) / 1000.0; a[3] += (t4 - t3) / 1000.0; a[4] += (t5 - t4) / 1000.0;
+          if (++n == 120) { blog("avg ms: update %.2f render(cpu 3D+2D) %.2f swizzle %.2f gpuScene %.2f present(upload+swap) %.2f  | tris %d", a[0] / n, a[1] / n, a[2] / n, a[3] / n, a[4] / n, (int)game.renderer().tri_count()); for (int i = 0; i < 5; i++) a[i] = 0; n = 0; } }
         if (frame < 3 || frame % 600 == 0) blog("frame %d presented dt=%.1fms", frame, dt * 1000.0f);
         frame++;
         { uint32_t el = ticks() - now; if (el < 16) sceKernelUsleep((16 - el) * 1000); }   // cap at ~60 fps

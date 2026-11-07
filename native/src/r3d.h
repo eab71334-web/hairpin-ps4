@@ -54,8 +54,9 @@ public:
     int threads = 4;
     // GPU mode: instead of rasterizing, collect view-space triangles (palette-UV encoded colour) for the console GPU; end() just clears fb to transparent.
     bool gpu = false;
-    const std::vector<float>& gpu_verts() const { return gv_; }   // 5 floats per vertex: x,y,z (view space), u,v (palette); 3 vertices per triangle
-    const std::vector<float>& gpu_depth() const { return gz_; }   // per triangle: view-space distance of the centroid (for painter sorting when no depth buffer)
+    void set_layer(int l) { layer_ = l ? 1 : 0; }                  // 0 = world, 1 = cockpit/hands (drawn after a depth clear with a tighter near/far)
+    const std::vector<float>& gpu_verts(int layer = 0) const { return gv_[layer]; }   // 5 floats per vertex: x,y,z (view space), u,v (palette); 3 vertices per triangle
+    const std::vector<float>& gpu_depth(int layer = 0) const { return gz_[layer]; }   // per triangle: view-space distance of the centroid (painter sorting when no depth buffer)
     float focal() const { return f_; }
     uint32_t sky_top() const { return skyt_; }
     uint32_t sky_horizon() const { return skyh_; }
@@ -78,5 +79,6 @@ private:
     float fog0_ = 50, fog1_ = 400;
     float near_ = 0.15f;
     V3 to_view(const V3& p) const;
-    std::vector<float> gv_, gz_;
+    std::vector<float> gv_[2], gz_[2];
+    int layer_ = 0;
 };

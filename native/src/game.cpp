@@ -487,6 +487,7 @@ void Game::scene3d(float) {
             Xf rx = Xf::make(rp, world.heading_at(r.s), world.slope_at(r.s));
             draw_car3d(rend, r.model, rx, paint_rgb(r.paint), false, 0.0f);
         }
+        if (fpv) rend.set_layer(1);                                   // cockpit + hands: GPU draws them after a depth clear (no z-fighting)
         draw_car3d(rend, car_sel, pxf, pcol, fpv, -steer_vis * 1.6f);
         if (fpv) draw_hands(pxf, car_sel, -steer_vis * 1.6f);
         rend.end(fb_);

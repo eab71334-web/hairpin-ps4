@@ -41,7 +41,8 @@ void Renderer::begin(const Camera& cam, uint32_t sky_top, uint32_t sky_horizon, 
     horizon_ = cyc_ - f_ * tanf(cam.pitch);                                         // screen row of the horizon (pitch up = horizon lower)
     horizon_ = cyc_ + f_ * tanf(cam.pitch);
     tris.clear(); nt = 0;
-    gv_.clear(); gz_.clear();
+    for (int i = 0; i < 2; i++) { gv_[i].clear(); gz_[i].clear(); }
+    layer_ = 0;
 }
 
 static inline uint32_t mix_rgb(uint32_t a, uint32_t b, float t) {
@@ -55,8 +56,8 @@ void Renderer::emit(const V3& a, const V3& b, const V3& c, uint32_t col) {
         int idx = (r7 << 13) | (g7 << 6) | b6;
         float u = ((idx & 1023) + 0.5f) / 1024.0f, v = ((idx >> 10) + 0.5f) / 1024.0f;
         const V3* p[3] = {&a, &b, &c};
-        for (int i = 0; i < 3; i++) { gv_.push_back(p[i]->x); gv_.push_back(p[i]->y); gv_.push_back(p[i]->z); gv_.push_back(u); gv_.push_back(v); }
-        gz_.push_back(-(a.z + b.z + c.z) * (1.0f / 3.0f));
+        for (int i = 0; i < 3; i++) { std::vector<float>& G = gv_[layer_]; G.push_back(p[i]->x); G.push_back(p[i]->y); G.push_back(p[i]->z); G.push_back(u); G.push_back(v); }
+        gz_[layer_].push_back(-(a.z + b.z + c.z) * (1.0f / 3.0f));
         nt++;
         return;
     }
