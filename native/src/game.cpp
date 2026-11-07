@@ -384,7 +384,7 @@ float Game::steer_lock(float v, float mu) {       // max road-wheel angle (rad):
 // speed = forward speed in the car frame, vy_ = sideways speed (left +), wz_ = yaw rate (left +).
 void Game::step_car(float dt, float gas, float brake, bool hb, float steer) {
     const float M = 1350.0f, A = 1.25f, B = 1.30f, L = A + B, IZ = 2100.0f, G = 9.81f, HCG = 0.52f;
-    float steps = std::max(1.0f, std::ceil(dt / 0.008f));
+    float steps = std::max(1.0f, ceilf(dt / 0.008f));
     float h = dt / steps;
     bool off = fabsf(d_) > 7.6f;
     float mu = 1.28f * powf(gripf, 0.8f) * (off ? 0.58f : 1.0f);
